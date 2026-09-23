@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +25,7 @@ import pandas as pd  # noqa: E402
 import perf  # noqa: E402
 import portfolio  # noqa: E402
 import sync_history  # noqa: E402
+import update_prices  # noqa: E402
 import watchlist  # noqa: E402
 import news  # noqa: E402
 import pgcompat  # noqa: E402
@@ -448,6 +450,36 @@ class SyncHistoryUnitTests(TempDBMixin, unittest.TestCase):
         close = conn.execute("SELECT close FROM intraday_bars").fetchone()[0]
         self.assertEqual(close, 9.9)                                # updates in place
         conn.close()
+
+
+class _ConnectReached(Exception):
+    """Raised by a patched connect() to prove the isfile guard let a
+    Postgres DSN through without a network call actually happening."""
+
+
+class CliPostgresDsnGuardTests(unittest.TestCase):
+    """update_prices.py and sync_history.py both gate their --db argument on
+    os.path.isfile() before connecting - correct for a local SQLite path,
+    but a Postgres DSN (e.g. from the GitHub Actions scheduled-sync
+    workflow's DATABASE_URL secret) is never a real file on disk, so a
+    naive isfile() check would reject every hosted-deploy run with a
+    misleading "No database at ..." error before ever reaching connect().
+    Caught while wiring up the scheduled-sync workflow, before it ever ran
+    in CI - not by these tests failing first, but these lock the fix in."""
+
+    DSN = "postgresql://user:pw@example.neon.tech/neondb?sslmode=require"
+
+    def test_update_prices_skips_isfile_check_for_postgres_dsn(self):
+        with unittest.mock.patch.object(update_prices, "connect",
+                                         side_effect=_ConnectReached):
+            with self.assertRaises(_ConnectReached):
+                update_prices.main(["--db", self.DSN, "--key", "dummy"])
+
+    def test_sync_history_skips_isfile_check_for_postgres_dsn(self):
+        with unittest.mock.patch.object(sync_history, "connect",
+                                         side_effect=_ConnectReached):
+            with self.assertRaises(_ConnectReached):
+                sync_history.main(["--db", self.DSN, "--no-info", "--no-intraday"])
 
 
 class WatchlistTests(TempDBMixin, unittest.TestCase):

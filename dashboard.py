@@ -16,6 +16,7 @@ import charts
 import metrics as M
 import news
 import perf
+import pgcompat
 import watchlist
 from allocation import CONCENTRATION_PCT, allocate
 from portfolio import DBError, connect, import_csv, parse_csv
@@ -257,7 +258,7 @@ def load():
 
 
 # --------------------------------------------------------------------------- #
-if not os.path.isfile(DB):
+if not pgcompat.is_postgres_dsn(DB) and not os.path.isfile(DB):
     st.error("No `portfolio.db` yet. Build it first:")
     st.code("python portfolio.py import \"path\\to\\All-Accounts-Positions-....csv\"", language="bash")
     st.stop()

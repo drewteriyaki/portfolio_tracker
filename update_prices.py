@@ -34,6 +34,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import pgcompat  # noqa: E402  (local module)
 from portfolio import DEFAULT_DB, connect, money, pct  # noqa: E402  (local module)
 
 FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
@@ -220,7 +221,7 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=10.0, help="per-request timeout in seconds")
     args = ap.parse_args(argv)
 
-    if not os.path.isfile(args.db):
+    if not pgcompat.is_postgres_dsn(args.db) and not os.path.isfile(args.db):
         raise SystemExit(f"No database at {os.path.abspath(args.db)} - run `python portfolio.py import <csv>` first.")
 
     key = resolve_key(args.key, args.env)

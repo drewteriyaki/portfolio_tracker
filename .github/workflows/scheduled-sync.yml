@@ -1,0 +1,53 @@
+name: Scheduled sync (hosted Postgres)
+
+# Keeps the Neon Postgres copy fresh for the Streamlit Community Cloud
+# deploy. Streamlit Cloud has no background cron of its own, so this
+# replaces what the local Windows Scheduled Tasks (scheduled-refresh.cmd /
+# scheduled-sync.cmd) do for the local portfolio.db. Both target the same
+# DATABASE_URL - portfolio.connect() is dual-mode and routes a Postgres DSN
+# through pgcompat.py automatically, so these are the exact same scripts
+# used locally, just pointed at Postgres instead of a file path.
+#
+# Requires two repo secrets (Settings -> Secrets and variables -> Actions):
+#   DATABASE_URL     the Neon connection string
+#   FINNHUB_API_KEY   for the price refresh job
+
+on:
+  schedule:
+    # Live price refresh - every 15 minutes, market hours only
+    # (13:30-20:15 UTC covers 9:30am-4:15pm ET, including DST slop).
+    - cron: "*/15 13-20 * * 1-5"
+    # Daily history sync (Yahoo daily/intraday bars + fundamentals) -
+    # once after market close, 21:30 UTC.
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch: {}  # allow manual triggering from the Actions tab
+
+jobs:
+  refresh:
+    if: github.event.schedule == '*/15 13-20 * * 1-5' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Refresh live prices
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python update_prices.py --db "$DATABASE_URL"
+
+  sync:
+    if: github.event.schedule == '30 21 * * 1-5' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Sync price history
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python sync_history.py --db "$DATABASE_URL"

@@ -28,6 +28,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import pgcompat  # noqa: E402
 from portfolio import DEFAULT_DB, connect  # noqa: E402
 
 try:
@@ -287,7 +288,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     _require_yf()
-    if not os.path.isfile(args.db):
+    if not pgcompat.is_postgres_dsn(args.db) and not os.path.isfile(args.db):
         raise SystemExit(f"No database at {os.path.abspath(args.db)} - import a CSV first.")
 
     intraday_note = "" if args.no_intraday else (
