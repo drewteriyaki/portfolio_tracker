@@ -1,0 +1,31 @@
+# Secrets - never commit the real API key
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Local database (rebuild it from the CSV with: python portfolio.py import <file>)
+portfolio.db
+
+# CSVs uploaded through the dashboard's importer
+imports/
+
+# Dashboard UI preferences (chosen columns, etc.)
+.dashboard_prefs.json
+
+# Scheduled-task output (see setup-scheduled-tasks.ps1)
+logs/
+
+# Streamlit secrets (password/DB URL/API key for hosted deploy) - set via
+# Streamlit Community Cloud's Secrets UI instead, never committed
+.streamlit/secrets.toml
+
+# Claude Code local tooling config - not part of the app
+.claude/

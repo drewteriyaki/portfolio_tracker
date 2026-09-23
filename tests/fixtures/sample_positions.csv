@@ -1,0 +1,14 @@
+"Positions for All-Accounts as of 06:10 PM ET, 01/15/2026"
+
+Individual ...111
+"Symbol","Description","Price Change %","Day Change %","Gain $","Gain %","Cost Basis","Reinvest?","Reinvest Capital Gains?","Dividend Pay Date","Dividend Yield %","Next Earnings Date","% of Account","Market Value","Qty","Asset Type"
+"AAA","ALPHA CORP","+1.20%","+1.20%","$200.00","+20.00%","$1,000.00","No","No","--","--","--","+64.86%","$1,200.00","10","Equity"
+"BBB","BETA INDEX ETF","-2.00%","-2.00%","-$50.00","-10.00%","$500.00","Yes","No","--","1.50%","--","+24.32%","$450.00","5","ETFs & Closed End Funds"
+"Cash & Cash Investments","--","--","--","--","--","--","--","--","--","--","--","+5.41%","$100.00","--","Cash and Money Market"
+"Positions Total","","--","--","$150.00","+10.00%","$1,500.00","","","","","","100%","$1,750.00","",""
+
+Individual ...222
+"Symbol","Description","Price Change %","Day Change %","Gain $","Gain %","Cost Basis","Reinvest?","Reinvest Capital Gains?","Dividend Pay Date","Dividend Yield %","Next Earnings Date","% of Account","Market Value","Qty","Asset Type"
+"CCC","GAMMA MOTORS INC","-6.50%","-6.50%","-$400.00","-20.00%","$2,000.00","No","No","--","--","03/01/2026","+96.97%","$1,600.00","2","Equity"
+"Cash & Cash Investments","--","--","--","--","--","--","--","--","--","--","--","+3.03%","$50.00","--","Cash and Money Market"
+"Positions Total","","--","--","-$400.00","-20.00%","$2,000.00","","","","","","100%","$1,650.00","",""

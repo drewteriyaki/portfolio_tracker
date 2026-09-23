@@ -1,0 +1,26 @@
+# Dashboard dependencies. Install with:  pip install -r requirements.txt
+#
+# The CLI scripts (portfolio.py, update_prices.py) use only the Python standard
+# library - they need nothing from this file. Only dashboard.py needs these.
+#
+# Requires Python 3.10 or newer.
+#
+# pandas is pinned to 2.2.3 on purpose: pandas 3.0's wheels tripped a Windows
+# "Application Control policy" block on one machine (blocked pandas/_libs/algos.pyd).
+# 2.2.3 has been in wide circulation for years and loads cleanly. If 2.2.3 still
+# gets blocked on a locked-down machine, that's a Smart App Control / WDAC setting
+# to relax in Windows Security, not a code problem.
+
+streamlit==1.62.0
+pandas==2.2.3
+altair==6.2.2   # bundled with streamlit; pinned because dashboard.py imports it directly
+
+# Deep historical price data (sync_history.py / the dashboard's "Sync history"
+# button). Pulls ~2 years of daily OHLCV from Yahoo. Only this file needs it;
+# the Finnhub live-price path (update_prices.py) stays standard-library only.
+yfinance==1.7.0
+
+# Only needed when PORTFOLIO_DB / --db is a Postgres connection string (the
+# hosted-deploy path via pgcompat.py) - local SQLite usage never imports
+# this. Streamlit Community Cloud needs it in this file to install it.
+psycopg[binary]==3.2.3
