@@ -15,13 +15,23 @@
 -- valid (Postgres has no CREATE TABLE IF NOT EXISTS quirks here - it's
 -- supported natively, same as SQLite).
 
+-- Individual login accounts - see the matching comment in schema.sql.
+CREATE TABLE IF NOT EXISTS users (
+    id            SERIAL  PRIMARY KEY,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    password_salt TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+);
+
 CREATE TABLE IF NOT EXISTS snapshots (
     id            SERIAL  PRIMARY KEY,
     snapshot_date TEXT    NOT NULL,
     as_of_text    TEXT,
     source_file   TEXT    NOT NULL,
+    user_id       INTEGER NOT NULL,
     imported_at   TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
-    UNIQUE (snapshot_date, source_file)
+    UNIQUE (snapshot_date, source_file, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -45,8 +55,9 @@ CREATE TABLE IF NOT EXISTS positions (
     next_earnings_date TEXT,
     pct_of_account     REAL,
     source_file        TEXT,
+    user_id            INTEGER NOT NULL,
     imported_at        TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
-    UNIQUE (snapshot_date, account, symbol)
+    UNIQUE (snapshot_date, account, symbol, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS account_totals (
@@ -59,8 +70,9 @@ CREATE TABLE IF NOT EXISTS account_totals (
     reported_gain         REAL,
     reported_gain_pct     REAL,
     source_file           TEXT,
+    user_id               INTEGER NOT NULL,
     imported_at           TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
-    UNIQUE (snapshot_date, account)
+    UNIQUE (snapshot_date, account, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS price_history (
@@ -167,8 +179,10 @@ CREATE TABLE IF NOT EXISTS security_info (
 );
 
 CREATE TABLE IF NOT EXISTS watchlist (
-    ticker     TEXT    PRIMARY KEY,
-    added_at   TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    user_id    INTEGER NOT NULL,
+    ticker     TEXT    NOT NULL,
+    added_at   TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+    PRIMARY KEY (user_id, ticker)
 );
 
 CREATE TABLE IF NOT EXISTS news (

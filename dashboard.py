@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 import alerts
+import auth
 import charts
 import metrics as M
 import news
@@ -24,9 +25,8 @@ from update_prices import ENV_PATH, latest_snapshot, refresh_prices, resolve_key
 from changes import diff_positions, synthesize_transactions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PREFS_PATH = os.path.join(HERE, ".dashboard_prefs.json")
 # Defaults to ./portfolio.db; set PORTFOLIO_DB to point at another file (handy for
-# trying the importer against a throwaway copy, or running per-user instances).
+# trying the importer against a throwaway copy).
 DB = os.environ.get("PORTFOLIO_DB") or os.path.join(HERE, "portfolio.db")
 
 GREEN = "#16a34a"
@@ -35,33 +35,38 @@ RED = "#dc2626"
 st.set_page_config(page_title="Portfolio Tracker", page_icon="📈", layout="wide")
 
 
-def _check_password() -> bool:
-    """Password gate - active ONLY when APP_PASSWORD is set in st.secrets
-    (i.e. on a hosted deploy where that secret has been configured). A
-    plain local `streamlit run` has no secrets.toml at all, so this is a
-    complete no-op locally - nothing to set up, nothing changes for local
-    use; the gate only exists to protect a public deployed URL."""
-    try:
-        required = st.secrets.get("APP_PASSWORD")
-    except Exception:
-        required = None  # no secrets.toml present at all - fine, means local
-    if not required:
-        return True
-    if st.session_state.get("authed"):
+def _login() -> bool:
+    """Per-account login - every account is admin-provisioned (see
+    manage_users.py); there is no signup anywhere in this app. Sets
+    st.session_state["user_id"]/["username"] on success, same pattern the
+    old single shared-password gate used for "authed". Generic error
+    message on any failure (unknown username OR wrong password) so the
+    login screen never reveals which username exists."""
+    if st.session_state.get("user_id"):
         return True
     st.title("📈 Portfolio Tracker")
+    user = st.text_input("Username", key="login_user")
     pw = st.text_input("Password", type="password", key="login_pw")
     if st.button("Log in") or pw:
-        if pw == required:
-            st.session_state["authed"] = True
+        conn = connect(DB)
+        try:
+            user_id = auth.verify_login(conn, user, pw) if user and pw else None
+        finally:
+            conn.close()
+        if user_id is not None:
+            st.session_state["user_id"] = user_id
+            st.session_state["username"] = user
             st.rerun()
         elif pw:
-            st.error("Wrong password.")
+            st.error("Invalid username or password.")
     return False
 
 
-if not _check_password():
+if not _login():
     st.stop()
+
+USER_ID = st.session_state["user_id"]
+PREFS_PATH = os.path.join(HERE, f".dashboard_prefs.{USER_ID}.json")
 
 MASK = "•••"
 
@@ -234,16 +239,18 @@ def load():
     """Return (snapshot_date, positions, cash_by_account, quotes)."""
     conn = connect(DB)
     try:
-        snap = latest_snapshot(conn)
+        snap = latest_snapshot(conn, USER_ID)
         if not snap:
             return None, [], {}, {}
         rows = conn.execute(
-            "SELECT * FROM positions WHERE snapshot_date = ? ORDER BY account, symbol", (snap,)
+            "SELECT * FROM positions WHERE snapshot_date = ? AND user_id = ? ORDER BY account, symbol",
+            (snap, USER_ID)
         ).fetchall()
         cash_by_account = {
             r["account"]: r["cash_value"] or 0.0
             for r in conn.execute(
-                "SELECT account, cash_value FROM account_totals WHERE snapshot_date = ?", (snap,))
+                "SELECT account, cash_value FROM account_totals WHERE snapshot_date = ? AND user_id = ?",
+                (snap, USER_ID))
         }
         quotes = {
             r["ticker"]: dict(r)
@@ -277,7 +284,33 @@ if _flash:
 
 snapshot, positions, cash_by_account, quotes = load()
 if not positions:
-    st.warning("The database has no positions. Run an import first.")
+    # Blank-account onboarding: a brand-new admin-provisioned account has no
+    # data at all yet. Skip straight to a CSV upload prompt instead of the
+    # rest of the page (which would otherwise render a wall of "no data"
+    # empty states across every section) - reuses the same import_csv()
+    # entry point as the full "Import a new positions CSV" expander further
+    # down, just without that flow's diff-preview step (there's nothing to
+    # diff a first import against).
+    st.title("📈 Portfolio Tracker")
+    st.info(f"Welcome, **{st.session_state['username']}** — your account has no data yet. "
+            "Upload a Schwab Positions export CSV to get started.")
+    up = st.file_uploader("Positions export (.csv)", type=["csv"], key="onboard_csv_upload")
+    if up is not None:
+        imports_dir = os.path.join(HERE, "imports", str(USER_ID))
+        os.makedirs(imports_dir, exist_ok=True)
+        src_path = os.path.join(imports_dir, up.name)
+        with open(src_path, "wb") as fh:
+            fh.write(up.getbuffer())
+        _conn = connect(DB)
+        try:
+            info = import_csv(_conn, src_path, USER_ID)
+        except DBError as exc:
+            st.error(f"Import failed: {exc}")
+        else:
+            st.success(f"Imported snapshot {info['snapshot_date']} — {info['n_positions']} positions.")
+            st.rerun()
+        finally:
+            _conn.close()
     st.stop()
 
 cash = sum(cash_by_account.values())
@@ -288,7 +321,7 @@ sec_info = perf.security_info(DB)
 
 _wl_conn = connect(DB)
 try:
-    watch_tickers = watchlist.list_tickers(_wl_conn)
+    watch_tickers = watchlist.list_tickers(_wl_conn, USER_ID)
 finally:
     _wl_conn.close()
 _held_symbols = {p["symbol"] for p in positions}
@@ -331,9 +364,9 @@ day_change_total = sum(
 # last_open() must run BEFORE log_open() writes this session's own row, or
 # "since you last opened" would just be comparing the portfolio to itself.
 if "last_open_snapshot" not in st.session_state:
-    st.session_state["last_open_snapshot"] = perf.last_open(DB)
+    st.session_state["last_open_snapshot"] = perf.last_open(DB, USER_ID)
 if "value_logged" not in st.session_state:
-    st.session_state["value_logged"] = perf.log_open(DB, {
+    st.session_state["value_logged"] = perf.log_open(DB, USER_ID, {
         "snapshot_date": snapshot,
         "portfolio_value": portfolio_value,
         "holdings_value": tot_mv,
@@ -372,7 +405,7 @@ with right:
         conn = connect(DB)
         try:
             summary = refresh_prices(
-                conn, latest_snapshot(conn), key, delay=0.0,
+                conn, latest_snapshot(conn, USER_ID), USER_ID, key, delay=0.0,
                 on_quote=lambda i, n, tk, ok, px, err: bar.progress(i / n, text=f"{tk} ({i}/{n})"),
             )
         finally:
@@ -479,7 +512,7 @@ with st.expander("⬆️  Import a new positions CSV", expanded=False):
 
     src_path = None
     if up is not None:
-        imports_dir = os.path.join(HERE, "imports")
+        imports_dir = os.path.join(HERE, "imports", str(USER_ID))
         os.makedirs(imports_dir, exist_ok=True)
         src_path = os.path.join(imports_dir, up.name)
         with open(src_path, "wb") as fh:
@@ -502,14 +535,16 @@ with st.expander("⬆️  Import a new positions CSV", expanded=False):
                 # set (and the transactions derived from it) is the same however many
                 # times this file is imported.
                 base_date = _conn.execute(
-                    "SELECT MAX(snapshot_date) d FROM positions WHERE snapshot_date < ?",
-                    (file_date,),
+                    "SELECT MAX(snapshot_date) d FROM positions WHERE snapshot_date < ? AND user_id = ?",
+                    (file_date, USER_ID),
                 ).fetchone()["d"]
                 base_rows = [dict(r) for r in _conn.execute(
                     "SELECT account, symbol, description, quantity, cost_basis, market_value "
-                    "FROM positions WHERE snapshot_date = ?", (base_date,))] if base_date else []
+                    "FROM positions WHERE snapshot_date = ? AND user_id = ?",
+                    (base_date, USER_ID))] if base_date else []
                 replacing = _conn.execute(
-                    "SELECT 1 FROM positions WHERE snapshot_date = ? LIMIT 1", (file_date,)
+                    "SELECT 1 FROM positions WHERE snapshot_date = ? AND user_id = ? LIMIT 1",
+                    (file_date, USER_ID)
                 ).fetchone() is not None
 
                 d = diff_positions(base_rows, new_rows)
@@ -560,20 +595,22 @@ with st.expander("⬆️  Import a new positions CSV", expanded=False):
 
                 if st.button("✅  Confirm import", type="primary", key="csv_confirm"):
                     try:
-                        info = import_csv(_conn, src_path)
+                        info = import_csv(_conn, src_path, USER_ID)
                         # Replace-by-date: this date's inferred transactions are
                         # rewritten from the new file's diff.
                         _conn.execute(
-                            "DELETE FROM transactions WHERE trade_date = ?",
-                            (info["snapshot_date"],),
+                            "DELETE FROM transactions WHERE trade_date = ? AND user_id = ?",
+                            (info["snapshot_date"], USER_ID),
                         )
                         if txns:
+                            for _t in txns:
+                                _t["user_id"] = USER_ID
                             _conn.executemany(
                                 "INSERT INTO transactions (account, trade_date, action, symbol, "
                                 "description, quantity, price, amount, fees, realized_gain, "
-                                "source_file) VALUES "
+                                "source_file, user_id) VALUES "
                                 "(:account, :trade_date, :action, :symbol, :description, :quantity, "
-                                ":price, :amount, :fees, :realized_gain, :source_file)",
+                                ":price, :amount, :fees, :realized_gain, :source_file, :user_id)",
                                 txns,
                             )
                         _conn.commit()
@@ -619,7 +656,7 @@ prng = st.segmented_control("Range", charts.RANGE_LABELS, default="1D",
 # ticker_series() does for a single ticker (finest Yahoo interval that covers
 # the window), and already clips + falls back so this is never < 2 rows once
 # there's any data at all.
-_hist = perf.history(DB, days=charts.RANGE_DAYS[prng], include_app_open=False)
+_hist = perf.history(DB, USER_ID, days=charts.RANGE_DAYS[prng], include_app_open=False)
 if len(_hist) < 2:
     st.caption("Not enough data yet — **📥 Sync history** backfills a reconstructed "
                "line from Yahoo, and a point is logged each time you open the app.")
@@ -653,7 +690,7 @@ else:
                 tooltip=_ptips),
             use_container_width=True,
         )
-        _covered, _missing = perf.holdings_coverage(DB)
+        _covered, _missing = perf.holdings_coverage(DB, USER_ID)
         st.caption(
             f"{len(pwin)} points · reconstructed from current holdings × each bar's close. "
             + (f"Sync {len(_missing)} more ticker(s) to extend the line: {', '.join(_missing)}."
@@ -918,7 +955,7 @@ wc2.write("")
 if wc2.button("+ Add to watchlist", use_container_width=True) and _wl_raw.strip():
     _wl_conn = connect(DB)
     try:
-        added = watchlist.add(_wl_conn, _wl_raw)
+        added = watchlist.add(_wl_conn, USER_ID, _wl_raw)
     finally:
         _wl_conn.close()
     if added:
@@ -1089,7 +1126,7 @@ if _pill_sym:
                 # widget has already been instantiated in the same run.
                 _wl_conn = connect(DB)
                 try:
-                    watchlist.remove(_wl_conn, sym)
+                    watchlist.remove(_wl_conn, USER_ID, sym)
                 finally:
                     _wl_conn.close()
                 st.session_state["watchlist_pill"] = None
@@ -1146,7 +1183,7 @@ st.subheader("📜 Activity")
 _txn_conn = connect(DB)
 try:
     _all_txns = [dict(r) for r in _txn_conn.execute(
-        "SELECT * FROM transactions ORDER BY trade_date DESC, id DESC")]
+        "SELECT * FROM transactions WHERE user_id = ? ORDER BY trade_date DESC, id DESC", (USER_ID,))]
 finally:
     _txn_conn.close()
 

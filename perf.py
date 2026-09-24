@@ -109,7 +109,7 @@ def _parse(ts: str) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def last_open(db_path: str) -> dict | None:
+def last_open(db_path: str, user_id: int) -> dict | None:
     """The most recent app_open row, or None if this is the first visit ever.
     Call this BEFORE log_open() logs the current session's row, or it'll just
     return what you're about to log."""
@@ -120,45 +120,48 @@ def last_open(db_path: str) -> dict | None:
         # (as in a test with min_gap_sec=0) can otherwise tie and SQLite's
         # pick among tied rows isn't guaranteed to be the newest insert.
         row = conn.execute(
-            "SELECT * FROM value_log WHERE source = 'app_open' "
-            "ORDER BY logged_at DESC, id DESC LIMIT 1"
+            "SELECT * FROM value_log WHERE source = 'app_open' AND user_id = ? "
+            "ORDER BY logged_at DESC, id DESC LIMIT 1", (user_id,)
         ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
 
 
-def log_open(db_path: str, agg: dict, *, min_gap_sec: int = MIN_LOG_GAP_SEC) -> bool:
+def log_open(db_path: str, user_id: int, agg: dict, *, min_gap_sec: int = MIN_LOG_GAP_SEC) -> bool:
     """Append one app_open row of `agg`. Returns False (writes nothing) if the
     most recent app_open row is younger than `min_gap_sec`."""
     conn = connect(db_path)
     try:
         last = conn.execute(
-            "SELECT logged_at FROM value_log WHERE source = 'app_open' "
-            "ORDER BY logged_at DESC LIMIT 1"
+            "SELECT logged_at FROM value_log WHERE source = 'app_open' AND user_id = ? "
+            "ORDER BY logged_at DESC LIMIT 1", (user_id,)
         ).fetchone()
         if last and (datetime.now(timezone.utc) - _parse(last["logged_at"])).total_seconds() < min_gap_sec:
             return False
         row = {c: agg.get(c) for c in _LOG_COLS}
         row["logged_at"] = _utc_now_iso()
         row["source"] = "app_open"
+        row["user_id"] = user_id
+        cols = _LOG_COLS + ["user_id"]
         conn.execute(
-            f"INSERT INTO value_log ({', '.join(_LOG_COLS)}) "
-            f"VALUES ({', '.join(':' + c for c in _LOG_COLS)})", row)
+            f"INSERT INTO value_log ({', '.join(cols)}) "
+            f"VALUES ({', '.join(':' + c for c in cols)})", row)
         conn.commit()
         return True
     finally:
         conn.close()
 
 
-def _snapshot_aggregates(conn, snapshot_date: str) -> dict:
+def _snapshot_aggregates(conn, user_id: int, snapshot_date: str) -> dict:
     """Portfolio value etc. for a historical CSV snapshot, from its own figures."""
     p = conn.execute(
         "SELECT COALESCE(SUM(market_value), 0) mv, COALESCE(SUM(cost_basis), 0) cost, "
-        "COUNT(*) n FROM positions WHERE snapshot_date = ?", (snapshot_date,)).fetchone()
+        "COUNT(*) n FROM positions WHERE snapshot_date = ? AND user_id = ?",
+        (snapshot_date, user_id)).fetchone()
     cash = conn.execute(
-        "SELECT COALESCE(SUM(cash_value), 0) c FROM account_totals WHERE snapshot_date = ?",
-        (snapshot_date,)).fetchone()["c"]
+        "SELECT COALESCE(SUM(cash_value), 0) c FROM account_totals WHERE snapshot_date = ? AND user_id = ?",
+        (snapshot_date, user_id)).fetchone()["c"]
     mv, cost = p["mv"], p["cost"]
     gain = mv - cost
     return {
@@ -173,7 +176,7 @@ def _snapshot_aggregates(conn, snapshot_date: str) -> dict:
     }
 
 
-def history(db_path: str, *, days: int | None = None, reconstruct: bool = True,
+def history(db_path: str, user_id: int, *, days: int | None = None, reconstruct: bool = True,
             include_snapshots: bool = False, include_app_open: bool = True) -> list[dict]:
     """Merged time series for the performance chart: every `value_log` row
     (source 'app_open') and a reconstructed portfolio-value line (source
@@ -196,14 +199,16 @@ def history(db_path: str, *, days: int | None = None, reconstruct: bool = True,
         rows: list[dict] = []
         if include_snapshots:
             for s in conn.execute(
-                    "SELECT DISTINCT snapshot_date FROM positions ORDER BY snapshot_date"):
+                    "SELECT DISTINCT snapshot_date FROM positions WHERE user_id = ? ORDER BY snapshot_date",
+                    (user_id,)):
                 d = s["snapshot_date"]
                 rows.append({"t": f"{d}T00:00:00Z", "source": "snapshot",
                              "source_label": SOURCE_LABEL["snapshot"], "snapshot_date": d,
                              "priced_at": None, "n_priced": None,
-                             **_snapshot_aggregates(conn, d)})
+                             **_snapshot_aggregates(conn, user_id, d)})
         if include_app_open:
-            for r in conn.execute("SELECT * FROM value_log ORDER BY logged_at"):
+            for r in conn.execute("SELECT * FROM value_log WHERE user_id = ? ORDER BY logged_at",
+                                   (user_id,)):
                 rec = {"t": r["logged_at"], "source": r["source"],
                        "source_label": SOURCE_LABEL.get(r["source"], r["source"]),
                        "snapshot_date": r["snapshot_date"],
@@ -212,8 +217,8 @@ def history(db_path: str, *, days: int | None = None, reconstruct: bool = True,
                     rec[c] = r[c]
                 rows.append(rec)
         if reconstruct:
-            rows.extend(_reconstructed_daily_rows(conn) if days is None
-                        else _reconstruct_best(conn, days))
+            rows.extend(_reconstructed_daily_rows(conn, user_id) if days is None
+                        else _reconstruct_best(conn, user_id, days))
         rows.sort(key=lambda x: x["t"])
         if days is None:
             return rows
@@ -224,26 +229,28 @@ def history(db_path: str, *, days: int | None = None, reconstruct: bool = True,
         conn.close()
 
 
-def holdings_coverage(db_path: str):
+def holdings_coverage(db_path: str, user_id: int):
     """(covered_tickers, missing_tickers) for the latest snapshot vs daily_bars."""
     conn = connect(db_path)
     try:
-        return _coverage(conn)
+        return _coverage(conn, user_id)
     finally:
         conn.close()
 
 
-def _coverage(conn):
-    snap = conn.execute("SELECT MAX(snapshot_date) d FROM positions").fetchone()["d"]
+def _coverage(conn, user_id: int):
+    snap = conn.execute("SELECT MAX(snapshot_date) d FROM positions WHERE user_id = ?",
+                        (user_id,)).fetchone()["d"]
     held = [r["symbol"] for r in conn.execute(
-        "SELECT DISTINCT symbol FROM positions WHERE snapshot_date = ?", (snap,))]
+        "SELECT DISTINCT symbol FROM positions WHERE snapshot_date = ? AND user_id = ?",
+        (snap, user_id))]
     have = {r["ticker"] for r in conn.execute(
         "SELECT DISTINCT ticker FROM daily_bars WHERE ticker IN (%s)"
         % ",".join("?" * len(held)), held)} if held else set()
     return sorted(t for t in held if t in have), sorted(t for t in held if t not in have)
 
 
-def _reconstruct_from(conn, sql: str, params) -> list[dict]:
+def _reconstruct_from(conn, user_id: int, sql: str, params) -> list[dict]:
     """Shared aggregation for the reconstructed line: `sql` must yield
     (t, ticker, close) rows. At every timestamp any held ticker has a bar,
     values the whole portfolio using each ticker's most recent known close as
@@ -254,18 +261,19 @@ def _reconstruct_from(conn, sql: str, params) -> list[dict]:
     total based on which subset of holdings happened to report that instant,
     not on what the market actually did. A newly-listed holding joins the sum
     once its first bar arrives and never drops back out."""
-    snap = conn.execute("SELECT MAX(snapshot_date) d FROM positions").fetchone()["d"]
+    snap = conn.execute("SELECT MAX(snapshot_date) d FROM positions WHERE user_id = ?",
+                        (user_id,)).fetchone()["d"]
     if not snap:
         return []
     holdings = {r["symbol"]: (r["quantity"] or 0.0, r["cost_basis"] or 0.0)
                 for r in conn.execute(
-                    "SELECT symbol, quantity, cost_basis FROM positions WHERE snapshot_date = ?",
-                    (snap,))}
+                    "SELECT symbol, quantity, cost_basis FROM positions WHERE snapshot_date = ? AND user_id = ?",
+                    (snap, user_id))}
     if not holdings:
         return []
     cash = conn.execute(
-        "SELECT COALESCE(SUM(cash_value), 0) c FROM account_totals WHERE snapshot_date = ?",
-        (snap,)).fetchone()["c"]
+        "SELECT COALESCE(SUM(cash_value), 0) c FROM account_totals WHERE snapshot_date = ? AND user_id = ?",
+        (snap, user_id)).fetchone()["c"]
 
     series: dict[str, list[tuple[str, float]]] = {tk: [] for tk in holdings}
     for t, ticker, close in conn.execute(sql, params):
@@ -312,26 +320,27 @@ def _reconstruct_from(conn, sql: str, params) -> list[dict]:
     return out
 
 
-def _reconstructed_daily_rows(conn) -> list[dict]:
+def _reconstructed_daily_rows(conn, user_id: int) -> list[dict]:
     """One point per trading day, from daily_bars."""
     return _reconstruct_from(
-        conn, "SELECT date, ticker, close FROM daily_bars WHERE close IS NOT NULL", ())
+        conn, user_id, "SELECT date, ticker, close FROM daily_bars WHERE close IS NOT NULL", ())
 
 
-def _reconstructed_intraday_rows(conn, interval: str) -> list[dict]:
+def _reconstructed_intraday_rows(conn, user_id: int, interval: str) -> list[dict]:
     """One point per bar at the given intraday resolution, from intraday_bars."""
     return _reconstruct_from(
-        conn, "SELECT ts, ticker, close FROM intraday_bars WHERE interval = ? AND close IS NOT NULL",
+        conn, user_id,
+        "SELECT ts, ticker, close FROM intraday_bars WHERE interval = ? AND close IS NOT NULL",
         (interval,))
 
 
-def _reconstruct_best(conn, days: int) -> list[dict]:
+def _reconstruct_best(conn, user_id: int, days: int) -> list[dict]:
     """Reconstructed portfolio-value rows at the finest resolution whose
     Yahoo look-back covers `days` and that actually has >=2 points within the
     window; [] if nothing qualifies (caller falls back further)."""
     for interval in _intervals_for(days):
-        rows = (_reconstructed_daily_rows(conn) if interval == "1d"
-                else _reconstructed_intraday_rows(conn, interval))
+        rows = (_reconstructed_daily_rows(conn, user_id) if interval == "1d"
+                else _reconstructed_intraday_rows(conn, user_id, interval))
         cutoff = f"{_cutoff_daily(days)}T00:00:00Z" if interval == "1d" else _cutoff_ts(days)
         clipped = [r for r in rows if r["t"] >= cutoff]
         if len(clipped) >= 2:

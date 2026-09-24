@@ -1,14 +1,39 @@
 -- Portfolio tracker schema (phase 1)
 -- SQLite. Safe to run repeatedly; every object uses IF NOT EXISTS.
 
+-- Individual login accounts. Admin-provisioned only (see manage_users.py) -
+-- there is no self-service signup anywhere in the app.
+--
+-- `user_id` on snapshots/positions/account_totals is declared directly
+-- below (unlike live_price/day_open/realized_gain, which are ALTER-only)
+-- because their UNIQUE constraints need to include it - two different
+-- users legitimately CAN share a snapshot_date+account+symbol (e.g. the
+-- same broker account-naming convention, or two people testing with the
+-- same sample data), and the pre-multi-user constraints would otherwise
+-- block the second user's import. transactions/value_log have no UNIQUE
+-- constraint to widen, so they still just get user_id via the
+-- ALTER-if-missing loop in portfolio.py's _ensure_schema, same as before.
+-- Deployed databases that predate this (this app has exactly one: the
+-- live one) needed a one-time explicit table-rebuild migration to widen
+-- their already-existing constraints - CREATE TABLE IF NOT EXISTS alone
+-- can't retrofit that onto a table that already exists.
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,          -- hex pbkdf2_hmac('sha256', ...) digest
+    password_salt TEXT    NOT NULL,          -- hex random salt (os.urandom(16))
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- One row per (positions export file, as-of date) that has been imported.
 CREATE TABLE IF NOT EXISTS snapshots (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_date TEXT    NOT NULL,              -- ISO date parsed from the export header, e.g. 2026-08-28
     as_of_text    TEXT,                          -- raw "as of ..." string from the file
     source_file   TEXT    NOT NULL,              -- absolute path of the CSV that was imported
+    user_id       INTEGER NOT NULL,
     imported_at   TEXT    NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (snapshot_date, source_file)
+    UNIQUE (snapshot_date, source_file, user_id)
 );
 
 -- One row per real holding, per account, per snapshot.
@@ -34,8 +59,9 @@ CREATE TABLE IF NOT EXISTS positions (
     next_earnings_date TEXT,
     pct_of_account     REAL,
     source_file        TEXT,
+    user_id            INTEGER NOT NULL,
     imported_at        TEXT    NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (snapshot_date, account, symbol)
+    UNIQUE (snapshot_date, account, symbol, user_id)
 );
 
 -- The skipped-but-useful rows: per account, the cash line's market value and the
@@ -51,8 +77,9 @@ CREATE TABLE IF NOT EXISTS account_totals (
     reported_gain         REAL,                   -- "Positions Total" gain $
     reported_gain_pct     REAL,                   -- "Positions Total" gain %
     source_file           TEXT,
+    user_id               INTEGER NOT NULL,
     imported_at           TEXT    NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (snapshot_date, account)
+    UNIQUE (snapshot_date, account, user_id)
 );
 
 -- Live quotes fetched by update_prices.py. Append-only: one row per ticker per run.
@@ -172,9 +199,12 @@ CREATE TABLE IF NOT EXISTS security_info (
 );
 
 -- Tickers tracked for their chart/stats without being an owned position.
+-- Per-user: two different accounts can each watch the same ticker.
 CREATE TABLE IF NOT EXISTS watchlist (
-    ticker     TEXT    PRIMARY KEY,
-    added_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+    user_id    INTEGER NOT NULL,
+    ticker     TEXT    NOT NULL,
+    added_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, ticker)
 );
 
 -- Company news headlines from Finnhub's /company-news endpoint, cached per

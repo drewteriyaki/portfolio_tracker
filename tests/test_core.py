@@ -18,6 +18,7 @@ sys.path.insert(0, REPO)
 
 import alerts  # noqa: E402
 import allocation  # noqa: E402
+import auth  # noqa: E402
 import changes  # noqa: E402
 import charts  # noqa: E402
 import metrics as M  # noqa: E402
@@ -38,6 +39,7 @@ class TempDBMixin:
         self.dir = tempfile.mkdtemp(prefix="pt_test_")
         self.db = os.path.join(self.dir, "test.db")
         portfolio._SCHEMA_READY.discard(os.path.abspath(self.db))
+        self.user_id = auth.create_user(portfolio.connect(self.db), "testuser", "testpass")
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -77,13 +79,13 @@ class ImportTests(TempDBMixin, unittest.TestCase):
 
     def test_import_verifies_and_is_idempotent(self):
         conn = portfolio.connect(self.db)
-        info = portfolio.import_csv(conn, FIXTURE)
+        info = portfolio.import_csv(conn, FIXTURE, self.user_id)
         self.assertEqual(info["snapshot_date"], "2026-01-15")
         self.assertEqual(info["n_positions"], 3)
         with contextlib.redirect_stdout(io.StringIO()):
             ok = portfolio.verify_snapshot(conn, "2026-01-15")
         self.assertTrue(ok)
-        portfolio.import_csv(conn, FIXTURE)  # again
+        portfolio.import_csv(conn, FIXTURE, self.user_id)  # again
         self.assertEqual(self._count(conn, "positions"), 3)
         self.assertEqual(self._count(conn, "snapshots"), 1)
         conn.close()
@@ -92,8 +94,8 @@ class ImportTests(TempDBMixin, unittest.TestCase):
         other = os.path.join(self.dir, "renamed_export.csv")
         shutil.copyfile(FIXTURE, other)
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)
-        portfolio.import_csv(conn, other)  # same date, different path
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
+        portfolio.import_csv(conn, other, self.user_id)  # same date, different path
         self.assertEqual(self._count(conn, "positions", snapshot_date="2026-01-15"), 3)
         self.assertEqual(self._count(conn, "snapshots"), 1)
         conn.close()
@@ -239,16 +241,16 @@ class PerfTests(TempDBMixin, unittest.TestCase):
 
     def test_log_open_throttle_and_history(self):
         portfolio.connect(self.db).close()  # create schema
-        self.assertTrue(perf.log_open(self.db, self.AGG))
-        self.assertFalse(perf.log_open(self.db, self.AGG))          # within the gap
-        self.assertTrue(perf.log_open(self.db, self.AGG, min_gap_sec=0))
+        self.assertTrue(perf.log_open(self.db, self.user_id, self.AGG))
+        self.assertFalse(perf.log_open(self.db, self.user_id, self.AGG))          # within the gap
+        self.assertTrue(perf.log_open(self.db, self.user_id, self.AGG, min_gap_sec=0))
         # snapshot rows come from positions; add one via import
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
         conn.close()
         # snapshots are opt-in; the default performance line is app_open (+ reconstructed)
-        self.assertEqual({r["source"] for r in perf.history(self.db)}, {"app_open"})
-        hist = perf.history(self.db, include_snapshots=True)
+        self.assertEqual({r["source"] for r in perf.history(self.db, self.user_id)}, {"app_open"})
+        hist = perf.history(self.db, self.user_id, include_snapshots=True)
         self.assertEqual({r["source"] for r in hist}, {"snapshot", "app_open"})
         snap_row = next(r for r in hist if r["source"] == "snapshot")
         self.assertEqual(snap_row["source_label"], perf.SOURCE_LABEL["snapshot"])
@@ -260,20 +262,20 @@ class PerfTests(TempDBMixin, unittest.TestCase):
         # portfolio to itself - last_open() itself has no special-casing for
         # that, it always just returns the newest app_open row.
         portfolio.connect(self.db).close()
-        self.assertIsNone(perf.last_open(self.db))          # never opened before
-        perf.log_open(self.db, self.AGG, min_gap_sec=0)
-        first = perf.last_open(self.db)
+        self.assertIsNone(perf.last_open(self.db, self.user_id))          # never opened before
+        perf.log_open(self.db, self.user_id, self.AGG, min_gap_sec=0)
+        first = perf.last_open(self.db, self.user_id)
         self.assertAlmostEqual(first["portfolio_value"], 3400.0, places=2)
         newer_agg = {**self.AGG, "portfolio_value": 5000.0}
-        perf.log_open(self.db, newer_agg, min_gap_sec=0)
-        second = perf.last_open(self.db)
+        perf.log_open(self.db, self.user_id, newer_agg, min_gap_sec=0)
+        second = perf.last_open(self.db, self.user_id)
         self.assertAlmostEqual(second["portfolio_value"], 5000.0, places=2)
 
 
 class PerfBarsTests(TempDBMixin, unittest.TestCase):
     def _seed(self):
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)  # AAA qty10 cost1000, BBB qty5 cost500, CCC qty2 cost2000
+        portfolio.import_csv(conn, FIXTURE, self.user_id)  # AAA qty10 cost1000, BBB qty5 cost500, CCC qty2 cost2000
         bars = []
         # 60 trading days; AAA rises 100->? , CCC flat, BBB only has 30 days (recent listing)
         for i in range(60):
@@ -304,10 +306,10 @@ class PerfBarsTests(TempDBMixin, unittest.TestCase):
 
     def test_coverage_and_reconstruction(self):
         self._seed()
-        covered, missing = perf.holdings_coverage(self.db)
+        covered, missing = perf.holdings_coverage(self.db, self.user_id)
         self.assertEqual(set(covered), {"AAA", "BBB", "CCC"})
         self.assertEqual(missing, [])
-        hist = perf.history(self.db)
+        hist = perf.history(self.db, self.user_id)
         rec = [r for r in hist if r["source"] == "reconstructed"]
         self.assertEqual(len(rec), 60)
         self.assertEqual(rec[0]["n_positions"], 2)           # BBB not listed yet
@@ -320,7 +322,7 @@ class PerfBarsTests(TempDBMixin, unittest.TestCase):
         # a naive "exact timestamp match" sum would make the portfolio value
         # swing based on which ticker happened to report, not on real moves.
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)  # AAA qty10 cost1000, CCC qty2 cost2000
+        portfolio.import_csv(conn, FIXTURE, self.user_id)  # AAA qty10 cost1000, CCC qty2 cost2000
         now = datetime.now(timezone.utc).replace(microsecond=0)
         t0 = (now - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         t1 = (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -334,7 +336,7 @@ class PerfBarsTests(TempDBMixin, unittest.TestCase):
         conn.commit()
         conn.close()
 
-        hist = perf.history(self.db, days=1)
+        hist = perf.history(self.db, self.user_id, days=1)
         rec = [r for r in hist if r["source"] == "reconstructed"]
         self.assertEqual([r["t"] for r in rec], [t0, t1, t2])
         # 14:30: only AAA has reported anything yet -> partial (matches
@@ -350,18 +352,18 @@ class PerfBarsTests(TempDBMixin, unittest.TestCase):
 
     def test_history_empty_without_data(self):
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
         conn.close()
         self.assertFalse(perf.has_bars(self.db))
-        self.assertEqual(perf.history(self.db), [])                       # nothing to plot yet
-        self.assertEqual({r["source"] for r in perf.history(self.db, include_snapshots=True)},
+        self.assertEqual(perf.history(self.db, self.user_id), [])                       # nothing to plot yet
+        self.assertEqual({r["source"] for r in perf.history(self.db, self.user_id, include_snapshots=True)},
                          {"snapshot"})
 
 
 class IntradayTests(TempDBMixin, unittest.TestCase):
     def _seed(self):
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)  # AAA, BBB, CCC
+        portfolio.import_csv(conn, FIXTURE, self.user_id)  # AAA, BBB, CCC
         now = datetime.now(timezone.utc)
 
         def stamp(minutes_ago):
@@ -408,7 +410,7 @@ class IntradayTests(TempDBMixin, unittest.TestCase):
 
     def test_ticker_series_falls_back_when_no_intraday(self):
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
         conn.executemany(
             "INSERT INTO daily_bars (ticker, date, close, volume) VALUES (?,?,?,1000)",
             [("AAA", f"2020-01-{d:02d}", 50.0 + d) for d in range(1, 5)])
@@ -473,13 +475,79 @@ class CliPostgresDsnGuardTests(unittest.TestCase):
         with unittest.mock.patch.object(update_prices, "connect",
                                          side_effect=_ConnectReached):
             with self.assertRaises(_ConnectReached):
-                update_prices.main(["--db", self.DSN, "--key", "dummy"])
+                update_prices.main(["--db", self.DSN, "--key", "dummy", "--user", "testuser"])
 
     def test_sync_history_skips_isfile_check_for_postgres_dsn(self):
         with unittest.mock.patch.object(sync_history, "connect",
                                          side_effect=_ConnectReached):
             with self.assertRaises(_ConnectReached):
                 sync_history.main(["--db", self.DSN, "--no-info", "--no-intraday"])
+
+
+class AuthTests(TempDBMixin, unittest.TestCase):
+    """TempDBMixin already created one user ('testuser'/'testpass', id
+    self.user_id) via auth.create_user() in setUp - these tests exercise
+    the rest of the auth surface directly."""
+
+    def test_verify_login_round_trip(self):
+        conn = portfolio.connect(self.db)
+        self.assertEqual(auth.verify_login(conn, "testuser", "testpass"), self.user_id)
+
+    def test_verify_login_rejects_wrong_password(self):
+        conn = portfolio.connect(self.db)
+        self.assertIsNone(auth.verify_login(conn, "testuser", "wrongpass"))
+
+    def test_verify_login_rejects_unknown_username(self):
+        conn = portfolio.connect(self.db)
+        self.assertIsNone(auth.verify_login(conn, "nosuchuser", "whatever"))
+
+    def test_duplicate_username_rejected(self):
+        conn = portfolio.connect(self.db)
+        with self.assertRaises(portfolio.DBError):
+            auth.create_user(conn, "testuser", "anotherpass")
+
+    def test_set_password_changes_login(self):
+        conn = portfolio.connect(self.db)
+        self.assertTrue(auth.set_password(conn, "testuser", "newpass"))
+        self.assertIsNone(auth.verify_login(conn, "testuser", "testpass"))     # old password now rejected
+        self.assertEqual(auth.verify_login(conn, "testuser", "newpass"), self.user_id)
+
+    def test_set_password_unknown_user_returns_false(self):
+        conn = portfolio.connect(self.db)
+        self.assertFalse(auth.set_password(conn, "nosuchuser", "whatever"))
+
+    def test_two_users_never_see_each_others_data(self):
+        """The core multi-tenancy guarantee: create a second account in the
+        same database, import a DIFFERENT csv for it, and confirm every
+        user-owned read (positions, watchlist, value_log/perf.history) for
+        user A never returns user B's rows, and vice versa."""
+        conn = portfolio.connect(self.db)
+        user_a = self.user_id
+        user_b = auth.create_user(conn, "otheruser", "otherpass")
+
+        portfolio.import_csv(conn, FIXTURE, user_a)
+        other_fixture = os.path.join(self.dir, "other_positions.csv")
+        shutil.copyfile(FIXTURE, other_fixture)
+        # re-date the second file's snapshot so both users have distinct,
+        # independently-verifiable data even though they share a "date" concept
+        portfolio.import_csv(conn, other_fixture, user_b)
+
+        a_positions = conn.execute(
+            "SELECT symbol FROM positions WHERE user_id = ?", (user_a,)).fetchall()
+        b_positions = conn.execute(
+            "SELECT symbol FROM positions WHERE user_id = ?", (user_b,)).fetchall()
+        self.assertEqual(len(a_positions), 3)
+        self.assertEqual(len(b_positions), 3)
+
+        watchlist.add(conn, user_a, "NVDA")
+        watchlist.add(conn, user_b, "AMD")
+        self.assertEqual(watchlist.list_tickers(conn, user_a), ["NVDA"])
+        self.assertEqual(watchlist.list_tickers(conn, user_b), ["AMD"])
+
+        perf.log_open(self.db, user_a, {"portfolio_value": 111}, min_gap_sec=0)
+        perf.log_open(self.db, user_b, {"portfolio_value": 222}, min_gap_sec=0)
+        self.assertEqual(perf.last_open(self.db, user_a)["portfolio_value"], 111)
+        self.assertEqual(perf.last_open(self.db, user_b)["portfolio_value"], 222)
 
 
 class WatchlistTests(TempDBMixin, unittest.TestCase):
@@ -492,18 +560,18 @@ class WatchlistTests(TempDBMixin, unittest.TestCase):
 
     def test_add_list_remove_is_idempotent(self):
         conn = portfolio.connect(self.db)
-        self.assertEqual(watchlist.add(conn, " nvda "), "NVDA")
-        self.assertEqual(watchlist.add(conn, "NVDA"), "NVDA")        # re-add is a no-op, not a dupe
-        self.assertIsNone(watchlist.add(conn, "not valid"))
-        self.assertEqual(watchlist.list_tickers(conn), ["NVDA"])
-        watchlist.remove(conn, "NVDA")
-        self.assertEqual(watchlist.list_tickers(conn), [])
+        self.assertEqual(watchlist.add(conn, self.user_id, " nvda "), "NVDA")
+        self.assertEqual(watchlist.add(conn, self.user_id, "NVDA"), "NVDA")        # re-add is a no-op, not a dupe
+        self.assertIsNone(watchlist.add(conn, self.user_id, "not valid"))
+        self.assertEqual(watchlist.list_tickers(conn, self.user_id), ["NVDA"])
+        watchlist.remove(conn, self.user_id, "NVDA")
+        self.assertEqual(watchlist.list_tickers(conn, self.user_id), [])
         conn.close()
 
     def test_all_sync_tickers_merges_held_and_watchlist(self):
         conn = portfolio.connect(self.db)
-        portfolio.import_csv(conn, FIXTURE)
-        watchlist.add(conn, "NVDA")
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
+        watchlist.add(conn, self.user_id, "NVDA")
         held = {r["symbol"] for r in conn.execute("SELECT DISTINCT symbol FROM positions")}
         merged = watchlist.all_sync_tickers(conn)
         self.assertEqual(set(merged), held | {"NVDA"})

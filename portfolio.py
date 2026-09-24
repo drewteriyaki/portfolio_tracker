@@ -256,6 +256,11 @@ TRANSACTIONS_EXTRA_COLS = [
     ("realized_gain", "REAL"),
 ]
 
+# Multi-user data isolation, added after the app already had real data in
+# these 5 tables (unlike watchlist, which was empty everywhere and could
+# just get user_id baked into its CREATE TABLE directly - see schema.sql).
+USER_ID_COL = [("user_id", "INTEGER")]
+
 
 # Schema creation + column back-fill is idempotent but not free; once a given
 # database file has been set up in this process, later connect() calls skip it.
@@ -269,7 +274,12 @@ def _ensure_schema(conn) -> None:
         conn.executescript(fh.read())
     for table, cols in (("positions", LIVE_POSITION_COLS),
                         ("price_history", PRICE_HISTORY_EXTRA_COLS),
-                        ("transactions", TRANSACTIONS_EXTRA_COLS)):
+                        ("transactions", TRANSACTIONS_EXTRA_COLS),
+                        ("snapshots", USER_ID_COL),
+                        ("positions", USER_ID_COL),
+                        ("account_totals", USER_ID_COL),
+                        ("transactions", USER_ID_COL),
+                        ("value_log", USER_ID_COL)):
         if is_pg:
             have = {r["column_name"] for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
@@ -332,15 +342,18 @@ POSITION_COLS = [
 ]
 
 
-def import_csv(conn: sqlite3.Connection, csv_path: str) -> dict:
-    """Parse a Schwab Positions export and write it into an open connection.
+def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int) -> dict:
+    """Parse a Schwab Positions export and write it into an open connection,
+    scoped to `user_id`.
 
     This is the shared entry point: `cmd_import` (CLI) and the Streamlit dashboard
     both call it. It upserts the `snapshots` row, then replaces `positions` and
     `account_totals` for the file's snapshot date. Re-importing *any* file for a
-    date that is already loaded replaces that date wholesale (keyed on
-    `snapshot_date` alone), so a re-downloaded export with a new filename still
-    works. Returns a summary dict; it does not print or verify.
+    date that is already loaded replaces that date wholesale for THIS user only
+    (keyed on `snapshot_date` + `user_id`), so a re-downloaded export with a new
+    filename still works, and two different users importing a CSV for the same
+    calendar date never touch each other's rows. Returns a summary dict; it does
+    not print or verify.
     """
     src = os.path.abspath(csv_path)
     if not os.path.isfile(src):
@@ -351,28 +364,35 @@ def import_csv(conn: sqlite3.Connection, csv_path: str) -> dict:
 
     with conn:
         # Replace-by-date: drop any prior import of this date (whatever its file),
-        # then the rows below re-establish it from `src`.
-        conn.execute("DELETE FROM snapshots WHERE snapshot_date = ? AND source_file <> ?", (snapshot_date, src))
+        # then the rows below re-establish it from `src`. Scoped to user_id so
+        # this never touches another user's snapshot for the same date.
         conn.execute(
-            "INSERT INTO snapshots (snapshot_date, as_of_text, source_file) VALUES (?, ?, ?) "
-            "ON CONFLICT(snapshot_date, source_file) DO UPDATE SET "
+            "DELETE FROM snapshots WHERE snapshot_date = ? AND source_file <> ? AND user_id = ?",
+            (snapshot_date, src, user_id))
+        conn.execute(
+            "INSERT INTO snapshots (snapshot_date, as_of_text, source_file, user_id) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(snapshot_date, source_file, user_id) DO UPDATE SET "
             "as_of_text = excluded.as_of_text, imported_at = datetime('now')",
-            (snapshot_date, meta["as_of_text"], src),
+            (snapshot_date, meta["as_of_text"], src, user_id),
         )
-        conn.execute("DELETE FROM positions WHERE snapshot_date = ?", (snapshot_date,))
-        conn.execute("DELETE FROM account_totals WHERE snapshot_date = ?", (snapshot_date,))
+        conn.execute("DELETE FROM positions WHERE snapshot_date = ? AND user_id = ?",
+                     (snapshot_date, user_id))
+        conn.execute("DELETE FROM account_totals WHERE snapshot_date = ? AND user_id = ?",
+                     (snapshot_date, user_id))
 
-        ph = ", ".join("?" for _ in POSITION_COLS)
+        pos_cols = POSITION_COLS + ["user_id"]
+        ph = ", ".join("?" for _ in pos_cols)
         conn.executemany(
-            f"INSERT INTO positions ({', '.join(POSITION_COLS)}) VALUES ({ph})",
-            [tuple(src if c == "source_file" else r.get(c) for c in POSITION_COLS) for r in rows],
+            f"INSERT INTO positions ({', '.join(pos_cols)}) VALUES ({ph})",
+            [tuple((src if c == "source_file" else user_id if c == "user_id" else r.get(c))
+                   for c in pos_cols) for r in rows],
         )
         conn.executemany(
             "INSERT INTO account_totals (snapshot_date, account, cash_value, reported_cost_basis, "
-            "reported_market_value, reported_gain, reported_gain_pct, source_file) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "reported_market_value, reported_gain, reported_gain_pct, source_file, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(snapshot_date, acct, t["cash_value"], t["reported_cost_basis"],
-              t["reported_market_value"], t["reported_gain"], t["reported_gain_pct"], src)
+              t["reported_market_value"], t["reported_gain"], t["reported_gain_pct"], src, user_id)
              for acct, t in totals.items()],
         )
 
@@ -388,9 +408,14 @@ def import_csv(conn: sqlite3.Connection, csv_path: str) -> dict:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
+    import auth
     conn = connect(args.db)
+    user_id = auth.get_user_id(conn, args.user)
+    if user_id is None:
+        raise SystemExit(f"No such user '{args.user}' - create one first: "
+                          f"python manage_users.py create {args.user}")
     try:
-        info = import_csv(conn, args.csv)
+        info = import_csv(conn, args.csv, user_id)
     except FileNotFoundError as exc:
         raise SystemExit(f"File not found: {exc}")
 
@@ -401,16 +426,22 @@ def cmd_import(args: argparse.Namespace) -> int:
     print(f"Database: {os.path.abspath(args.db)}")
     print("\nNote: transactions table created but left empty - the Positions export has no trade history.\n")
 
-    ok = verify_snapshot(conn, info["snapshot_date"])
+    ok = verify_snapshot(conn, info["snapshot_date"], user_id)
     return 0 if ok else 1
 
 
 # --------------------------------------------------------------------------- #
 # verify - parsed holdings vs the file's "Positions Total" rows
 # --------------------------------------------------------------------------- #
-def verify_snapshot(conn: sqlite3.Connection, snapshot: str) -> bool:
+def verify_snapshot(conn: sqlite3.Connection, snapshot: str, user_id: int | None = None) -> bool:
+    """`user_id=None` checks across every account sharing this snapshot_date
+    (fine for a single-tenant local DB; on a multi-user DB, pass the user's
+    id or accounts sharing a calendar date get summed together)."""
+    uid_clause = " AND user_id = ?" if user_id is not None else ""
+    uid_params = (user_id,) if user_id is not None else ()
     accounts = [r["account"] for r in conn.execute(
-        "SELECT DISTINCT account FROM positions WHERE snapshot_date = ? ORDER BY account", (snapshot,))]
+        f"SELECT DISTINCT account FROM positions WHERE snapshot_date = ?{uid_clause} ORDER BY account",
+        (snapshot, *uid_params))]
     if not accounts:
         raise SystemExit(f"No positions for snapshot {snapshot}.")
 
@@ -421,11 +452,11 @@ def verify_snapshot(conn: sqlite3.Connection, snapshot: str) -> bool:
 
     for acct in accounts:
         holdings = conn.execute(
-            "SELECT cost_basis, market_value FROM positions WHERE snapshot_date = ? AND account = ?",
-            (snapshot, acct)).fetchall()
+            f"SELECT cost_basis, market_value FROM positions WHERE snapshot_date = ? AND account = ?{uid_clause}",
+            (snapshot, acct, *uid_params)).fetchall()
         t = conn.execute(
-            "SELECT * FROM account_totals WHERE snapshot_date = ? AND account = ?",
-            (snapshot, acct)).fetchone()
+            f"SELECT * FROM account_totals WHERE snapshot_date = ? AND account = ?{uid_clause}",
+            (snapshot, acct, *uid_params)).fetchone()
 
         n = len(holdings)
         grand_n += n
@@ -467,12 +498,14 @@ def verify_snapshot(conn: sqlite3.Connection, snapshot: str) -> bool:
 def cmd_verify(args: argparse.Namespace) -> int:
     if not os.path.isfile(args.db):
         raise SystemExit(f"No database at {os.path.abspath(args.db)} - run `import` first.")
+    import auth
     conn = connect(args.db)
+    user_id = auth.get_user_id(conn, args.user) if getattr(args, "user", None) else None
     snapshot = args.snapshot or (conn.execute(
         "SELECT MAX(snapshot_date) AS d FROM positions").fetchone()["d"])
     if snapshot is None:
         raise SystemExit("No positions in the database yet.")
-    return 0 if verify_snapshot(conn, snapshot) else 1
+    return 0 if verify_snapshot(conn, snapshot, user_id) else 1
 
 
 # --------------------------------------------------------------------------- #
@@ -593,11 +626,14 @@ def build_parser() -> argparse.ArgumentParser:
     pi = sub.add_parser("import", help="parse a Schwab Positions CSV into SQLite")
     pi.add_argument("csv", help="path to the Positions export CSV")
     pi.add_argument("--db", default=DEFAULT_DB, help=f"SQLite file (default: {DEFAULT_DB})")
+    pi.add_argument("--user", required=True, help="account username to import this CSV into "
+                                                    "(see manage_users.py)")
     pi.set_defaults(func=cmd_import)
 
     pv = sub.add_parser("verify", help="check parsed holdings against the file's Positions Total rows")
     pv.add_argument("--db", default=DEFAULT_DB, help=f"SQLite file (default: {DEFAULT_DB})")
     pv.add_argument("--snapshot", help="snapshot date YYYY-MM-DD (default: latest)")
+    pv.add_argument("--user", help="scope to one account's data (default: everyone sharing that date)")
     pv.set_defaults(func=cmd_verify)
 
     pr = sub.add_parser("report", help="print an unrealized gain/loss summary")

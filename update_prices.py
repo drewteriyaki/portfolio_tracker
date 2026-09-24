@@ -133,14 +133,15 @@ def _record_quote(conn: sqlite3.Connection, ticker: str, data: dict, error: str,
     conn.commit()
 
 
-def apply_live_prices(conn: sqlite3.Connection, snapshot: str,
+def apply_live_prices(conn: sqlite3.Connection, snapshot: str, user_id: int,
                       fresh: dict, applied_at: str | None = None) -> int:
     """Write live_price / live_market_value / live_unrealized_gain[_pct] / live_price_at
-    onto every position in `snapshot` whose ticker has a fresh price. Returns the count."""
+    onto every position in `snapshot` (for `user_id`) whose ticker has a fresh
+    price. Returns the count."""
     applied_at = applied_at or utc_now_iso()
     rows = conn.execute(
-        "SELECT id, symbol, quantity, cost_basis FROM positions WHERE snapshot_date = ?",
-        (snapshot,)).fetchall()
+        "SELECT id, symbol, quantity, cost_basis FROM positions WHERE snapshot_date = ? AND user_id = ?",
+        (snapshot, user_id)).fetchall()
     updated = 0
     for r in rows:
         price = fresh.get(r["symbol"])
@@ -159,16 +160,17 @@ def apply_live_prices(conn: sqlite3.Connection, snapshot: str,
     return updated
 
 
-def refresh_prices(conn: sqlite3.Connection, snapshot: str, key: str, *,
+def refresh_prices(conn: sqlite3.Connection, snapshot: str, user_id: int, key: str, *,
                    delay: float = 0.25, timeout: float = 10.0, on_quote=None) -> dict:
-    """Fetch a quote for every distinct ticker, append to price_history, and
-    rewrite the live_* columns for `snapshot`.
+    """Fetch a quote for every distinct ticker `user_id` holds, append to
+    price_history (global, shared across users), and rewrite the live_*
+    columns for `user_id`'s `snapshot`.
 
     on_quote(i, total, ticker, ok, price, error) is called after each fetch.
     Returns {snapshot, tickers, ok, failed, results, updated, applied_at}.
     """
     tickers = [r["symbol"] for r in conn.execute(
-        "SELECT DISTINCT symbol FROM positions ORDER BY symbol")]
+        "SELECT DISTINCT symbol FROM positions WHERE user_id = ? ORDER BY symbol", (user_id,))]
 
     fresh: dict[str, float] = {}
     results = []  # (ticker, price|None, error|None, pct_change|None)
@@ -190,7 +192,7 @@ def refresh_prices(conn: sqlite3.Connection, snapshot: str, key: str, *,
             time.sleep(delay)
 
     applied_at = utc_now_iso()
-    updated = apply_live_prices(conn, snapshot, fresh, applied_at) if fresh else 0
+    updated = apply_live_prices(conn, snapshot, user_id, fresh, applied_at) if fresh else 0
     return {
         "snapshot": snapshot,
         "tickers": len(tickers),
@@ -202,8 +204,9 @@ def refresh_prices(conn: sqlite3.Connection, snapshot: str, key: str, *,
     }
 
 
-def latest_snapshot(conn: sqlite3.Connection) -> str | None:
-    row = conn.execute("SELECT MAX(snapshot_date) AS d FROM positions").fetchone()
+def latest_snapshot(conn: sqlite3.Connection, user_id: int) -> str | None:
+    row = conn.execute("SELECT MAX(snapshot_date) AS d FROM positions WHERE user_id = ?",
+                       (user_id,)).fetchone()
     return row["d"] if row else None
 
 
@@ -213,6 +216,8 @@ def latest_snapshot(conn: sqlite3.Connection) -> str | None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Fetch live Finnhub prices and update unrealized G/L.")
     ap.add_argument("--db", default=DEFAULT_DB, help=f"SQLite file (default: {DEFAULT_DB})")
+    ap.add_argument("--user", required=True, help="account username to refresh prices for "
+                                                    "(see manage_users.py)")
     ap.add_argument("--env", default=ENV_PATH, help="path to .env (default: alongside this script)")
     ap.add_argument("--key", help="API key override (otherwise .env, then $FINNHUB_API_KEY)")
     ap.add_argument("--snapshot", help="snapshot date to update (default: latest)")
@@ -233,8 +238,13 @@ def main(argv=None) -> int:
         print("  (or pass it directly:  python update_prices.py --key YOUR_KEY)")
         return 2
 
+    import auth
     conn = connect(args.db)
-    snapshot = args.snapshot or latest_snapshot(conn)
+    user_id = auth.get_user_id(conn, args.user)
+    if user_id is None:
+        raise SystemExit(f"No such user '{args.user}' - create one first: "
+                          f"python manage_users.py create {args.user}")
+    snapshot = args.snapshot or latest_snapshot(conn, user_id)
     if not snapshot:
         raise SystemExit("No positions in the database yet.")
 
@@ -246,7 +256,7 @@ def main(argv=None) -> int:
         else:
             print(f"  {ticker:<8} {'--':>12}   {error}")
 
-    summary = refresh_prices(conn, snapshot, key, delay=args.delay,
+    summary = refresh_prices(conn, snapshot, user_id, key, delay=args.delay,
                              timeout=args.timeout, on_quote=show)
     print(f"\n{summary['ok']} quote(s) stored in price_history, {summary['failed']} failed.")
     if summary["ok"] == 0:

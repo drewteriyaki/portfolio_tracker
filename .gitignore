@@ -17,8 +17,8 @@ portfolio.db
 # CSVs uploaded through the dashboard's importer
 imports/
 
-# Dashboard UI preferences (chosen columns, etc.)
-.dashboard_prefs.json
+# Dashboard UI preferences (chosen columns, etc.) - one file per user
+.dashboard_prefs*.json
 
 # Scheduled-task output (see setup-scheduled-tasks.ps1)
 logs/
