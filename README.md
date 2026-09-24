@@ -48,21 +48,21 @@ machine.
 | Section | What it does |
 |---|---|
 | **Since you last opened** | A one-line banner comparing the current portfolio value to your last visit (however long ago), with the $ / % change. Hidden on your very first-ever open. |
-| **Alerts** | Flags positions past a threshold. Defaults: day move beyond ±5 %, total gain/loss beyond ±20 %. Edit the limits under **⚙ Rules**; recomputed on every page load, no scheduler. |
+| **Alerts** | Flags positions past a threshold. Defaults: day move beyond ±5 %, total gain/loss beyond ±20 %. Edit the limits under **Rules**; recomputed on every page load, no scheduler. |
 | **Import a new positions CSV** | Upload (or point at) a fresh export. Shows new / increased / decreased / closed positions vs the prior snapshot **before** saving, then writes the snapshot and records inferred BUY/SELL rows in `transactions`. Re-importing a date replaces it. |
 | **Totals** | Portfolio value, gain/loss, holdings value, cash. |
 | **Performance over time** | Line chart of any recorded portfolio stat, with a **1D … 1Y** range picker and the **% change over the window** — the reconstructed value of your current holdings × each bar's close, gap-compressed so market-closed hours don't stretch the chart. |
-| **Allocation** | Bar charts by asset type and by account, a flag for any single position over 15 % of the portfolio, and **🎯 Targets** — set a target % per asset type and get flagged when you've drifted beyond a threshold (default ±5 pts). |
+| **Allocation** | Bar charts by asset type and by account, a flag for any single position over 15 % of the portfolio, and **Targets** — set a target % per asset type and get flagged when you've drifted beyond a threshold (default ±5 pts). |
 | **Accounts** | Side-by-side comparison across every account — total value, gain/loss, today's move, position count — plus each account's own asset-type mix, with a CSV export. Hidden if there's only one account. |
-| **Holdings** | Sortable table. **⚙ Columns** picks from ~35 stats (price, day change $/%, unrealized $/%, % of portfolio, day open/high/low, dividend yield, **20/50/200-day MA, volume, 52-wk high/low, beta, P/E, sector** …) — add or remove as many as you like; the choice is saved. Search and **tap a ticker's pill** above the table to open its chart, position summary, stats, and recent news headlines below (cached from Finnhub, refreshed every 4 hours). **⬇ Download CSV** exports the raw figures (disabled while amounts are hidden). |
+| **Holdings** | Sortable table. **Columns** picks from ~35 stats (price, day change $/%, unrealized $/%, % of portfolio, day open/high/low, dividend yield, **20/50/200-day MA, volume, 52-wk high/low, beta, P/E, sector** …) — add or remove as many as you like; the choice is saved. Search and **tap a ticker's pill** above the table to open its chart, position summary, stats, and recent news headlines below (cached from Finnhub, refreshed every 4 hours). **Download CSV** exports the raw figures (disabled while amounts are hidden). |
 | **Watchlist** | Track any ticker's chart/stats without owning it — add one by symbol, tap its pill the same way as a holding. |
 | **Activity** | Every inferred BUY/SELL transaction, filterable by account/action/symbol, with an estimated realized gain/loss (average-cost method) per sale and a CSV export. |
 | **Income** | Estimated annual dividend income and yield-on-holdings, plus a per-position breakdown (yield %, est. income, last pay date, reinvest) sorted by biggest contributor and a CSV export — from the CSV's own dividend fields, not Yahoo. |
 
-**🔄 Refresh prices** calls Finnhub's `/quote` endpoint for each ticker, appends
+**Refresh prices** calls Finnhub's `/quote` endpoint for each ticker, appends
 to `price_history`, and rewrites each position's live market value.
 
-**📥 Sync history** pulls the deepest history Yahoo allows at *every* resolution
+**Sync history** pulls the deepest history Yahoo allows at *every* resolution
 it offers into `daily_bars` / `intraday_bars` / `security_info`: ~2 years daily,
 plus 1-minute (~7 days back), 5- and 15-minute (~60 days back), and hourly
 (~2 years back) bars. The per-ticker chart automatically picks the finest
@@ -94,8 +94,8 @@ look-back: `6mo` `1y` `2y` `5y` `max`), `--tickers`, `--no-info`, `--no-intraday
 
 ## Keeping data fresh automatically
 
-By default, prices and history only update when you click **🔄 Refresh
-prices** / **📥 Sync history** in the dashboard. To have that happen on its
+By default, prices and history only update when you click **Refresh
+prices** / **Sync history** in the dashboard. To have that happen on its
 own, register two per-user Windows Scheduled Tasks (no admin rights needed):
 
 ```powershell

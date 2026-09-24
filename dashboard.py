@@ -32,7 +32,7 @@ DB = os.environ.get("PORTFOLIO_DB") or os.path.join(HERE, "portfolio.db")
 GREEN = "#16a34a"
 RED = "#dc2626"
 
-st.set_page_config(page_title="Portfolio Tracker", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 
 
 def _login() -> bool:
@@ -44,7 +44,7 @@ def _login() -> bool:
     login screen never reveals which username exists."""
     if st.session_state.get("user_id"):
         return True
-    st.title("📈 Portfolio Tracker")
+    st.title("Portfolio Tracker")
     user = st.text_input("Username", key="login_user")
     pw = st.text_input("Password", type="password", key="login_pw")
     if st.button("Log in") or pw:
@@ -291,7 +291,7 @@ if not positions:
     # entry point as the full "Import a new positions CSV" expander further
     # down, just without that flow's diff-preview step (there's nothing to
     # diff a first import against).
-    st.title("📈 Portfolio Tracker")
+    st.title("Portfolio Tracker")
     st.info(f"Welcome, **{st.session_state['username']}** — your account has no data yet. "
             "Upload a Schwab Positions export CSV to get started.")
     up = st.file_uploader("Positions export (.csv)", type=["csv"], key="onboard_csv_upload")
@@ -383,20 +383,20 @@ if "value_logged" not in st.session_state:
 # ---- header -------------------------------------------------------------- #
 left, right = st.columns([0.7, 0.3])
 with left:
-    st.title("📈 Portfolio Tracker")
+    st.title("Portfolio Tracker")
     st.caption(
         f"CSV snapshot **{snapshot}**  ·  "
         + (f"live prices as of **{last_live} UTC** ({n_live}/{len(positions)} priced)"
            if last_live else "**no live prices yet — click Refresh**")
     )
-    st.toggle("🙈 Hide amounts", key="hide_amounts",
+    st.toggle("Hide amounts", key="hide_amounts",
               help="Mask every dollar / percent on the page with " + MASK)
 hide_amounts = st.session_state["hide_amounts"]
 if hide_amounts != _read_prefs().get("hide_amounts", False):
     save_hide(hide_amounts)
 with right:
     st.write("")
-    if st.button("🔄 Refresh prices", type="primary", use_container_width=True):
+    if st.button("Refresh prices", type="primary", use_container_width=True):
         key = resolve_key(None, ENV_PATH)
         if not key:
             st.session_state["refresh_msg"] = ("error", "No FINNHUB_API_KEY in .env — add it and retry.")
@@ -423,7 +423,7 @@ with right:
                 "success", f"Updated {summary['updated']} positions from {summary['ok']} live quotes.")
         st.rerun()
 
-    if st.button("📥 Sync history (Yahoo)", use_container_width=True,
+    if st.button("Sync history (Yahoo)", use_container_width=True,
                  help="Pull the maximum history Yahoo allows at every resolution it offers - "
                       "~2 years daily, plus 1-minute (~7d), 5- and 15-minute (~60d), and "
                       "hourly (~2y) bars - plus fundamentals. Takes a minute or two. Powers "
@@ -477,8 +477,8 @@ _rules = load_rules()
 _fired = alerts.evaluate(contexts, _rules)
 
 al, ar = st.columns([0.8, 0.2])
-al.subheader(("🔴 " if _fired else "🟢 ") + f"Alerts ({len(_fired)})")
-with ar.popover("⚙  Rules", use_container_width=True):
+al.subheader(f"Alerts ({len(_fired)})")
+with ar.popover("Rules", use_container_width=True):
     _new = []
     for _r in alerts.DEFAULT_RULES:
         cur = next((x["abs_gt"] for x in _rules if x["key"] == _r["key"]), _r["abs_gt"])
@@ -498,7 +498,7 @@ else:
     st.caption("No position is past its day-move or gain/loss limit.")
 
 # ---- import a new positions CSV -------------------------------------- #
-with st.expander("⬆️  Import a new positions CSV", expanded=False):
+with st.expander("Import a new positions CSV", expanded=False):
     st.caption(
         "Upload a fresh Schwab **Positions** export (or point at one already on "
         "this machine). You'll see exactly what changed before anything is saved."
@@ -593,7 +593,7 @@ with st.expander("⬆️  Import a new positions CSV", expanded=False):
                     f"(BUY / SELL) are recorded."
                 )
 
-                if st.button("✅  Confirm import", type="primary", key="csv_confirm"):
+                if st.button("Confirm import", type="primary", key="csv_confirm"):
                     try:
                         info = import_csv(_conn, src_path, USER_ID)
                         # Replace-by-date: this date's inferred transactions are
@@ -658,7 +658,7 @@ prng = st.segmented_control("Range", charts.RANGE_LABELS, default="1D",
 # there's any data at all.
 _hist = perf.history(DB, USER_ID, days=charts.RANGE_DAYS[prng], include_app_open=False)
 if len(_hist) < 2:
-    st.caption("Not enough data yet — **📥 Sync history** backfills a reconstructed "
+    st.caption("Not enough data yet — **Sync history** backfills a reconstructed "
                "line from Yahoo, and a point is logged each time you open the app.")
 else:
     _fmtname = perf.SERIES_FMT[series_col]
@@ -732,7 +732,7 @@ def _short_acct(rows):
 al1, al2 = st.columns([0.75, 0.25])
 al1.subheader("Allocation")
 _asset_labels = [r["label"] for r in alloc["by_asset_type"]]
-with al2.popover("🎯  Targets", use_container_width=True):
+with al2.popover("Targets", use_container_width=True):
     st.caption("Set a target % of portfolio for any asset type — leave at 0 for no target.")
     _saved_targets = load_alloc_targets()
     _new_targets = {}
@@ -790,7 +790,7 @@ if _targets:
 st.divider()
 
 # ---- accounts: side-by-side comparison -------------------------------- #
-st.subheader("🏦 Accounts")
+st.subheader("Accounts")
 
 _acct_stats = {}
 for _p, _ctx in zip(positions, contexts):
@@ -842,10 +842,10 @@ else:
     )
     st.dataframe(_acct_styler, use_container_width=True, hide_index=True)
     st.download_button(
-        "⬇ Download CSV", _adf_raw.to_csv(index=False).encode("utf-8"),
+        "Download CSV", _adf_raw.to_csv(index=False).encode("utf-8"),
         file_name="accounts.csv", mime="text/csv", key="accounts_dl",
         disabled=hide_amounts, help=(
-            "Disabled while amounts are hidden — turn off 🙈 Hide amounts to export real figures."
+            "Disabled while amounts are hidden — turn off Hide amounts to export real figures."
             if hide_amounts else None),
     )
 
@@ -867,7 +867,7 @@ if "col_keys" not in st.session_state:
 
 h1, h2 = st.columns([0.75, 0.25])
 h1.subheader("Holdings")
-with h2.popover("⚙  Columns", use_container_width=True):
+with h2.popover("Columns", use_container_width=True):
     labels = st.multiselect(
         "Columns — add or remove as many as you want",
         [m.label for m in M.AVAILABLE],
@@ -880,7 +880,7 @@ with h2.popover("⚙  Columns", use_container_width=True):
         save_columns(new_keys)
     if not perf.has_bars(DB):
         st.caption("The **Yahoo history** columns (MA, Volume, 52-wk, Beta, P/E, Sector) "
-                   "stay blank until you click **📥 Sync history** up top.")
+                   "stay blank until you click **Sync history** up top.")
 
 # A tappable strip of ticker symbols — the Robinhood-style "click the name"
 # entry point into the detail view below. Deliberately separate from the
@@ -896,7 +896,7 @@ st.caption("Tap a ticker for its chart and full details:")
 _desc_by_sym = {p["symbol"]: (p.get("description") or "") for p in positions}
 _symbols_held = sorted(_desc_by_sym)
 _search = st.text_input("Search tickers", key="ticker_search",
-                        placeholder="🔍 Filter by symbol or name…", label_visibility="collapsed")
+                        placeholder="Filter by symbol or name…", label_visibility="collapsed")
 if _search.strip():
     _q = _search.strip().upper()
     _pill_options = [s for s in _symbols_held if _q in s.upper() or _q in _desc_by_sym[s].upper()]
@@ -935,19 +935,19 @@ if color_cols:
     styler = styler.map(color_sign, subset=color_cols)
 st.dataframe(styler, use_container_width=True, hide_index=True)
 st.download_button(
-    "⬇ Download CSV", df.to_csv(index=False).encode("utf-8"),
+    "Download CSV", df.to_csv(index=False).encode("utf-8"),
     file_name="holdings.csv", mime="text/csv", key="holdings_dl",
     disabled=hide_amounts, help=(
-        "Disabled while amounts are hidden — turn off 🙈 Hide amounts to export real figures."
+        "Disabled while amounts are hidden — turn off Hide amounts to export real figures."
         if hide_amounts else None),
 )
 st.caption("Green = gain, red = loss. Price / Market Value / Gain-Loss use the live price where "
-           "available, otherwise the CSV's figures. Edit the column set with **⚙ Columns**.")
+           "available, otherwise the CSV's figures. Edit the column set with **Columns**.")
 
 st.divider()
 
 # ---- watchlist: tickers tracked for their chart/stats, not owned ------- #
-st.subheader("★ Watchlist")
+st.subheader("Watchlist")
 wc1, wc2 = st.columns([0.75, 0.25])
 _wl_raw = wc1.text_input("Add a ticker", key="wl_add_input", placeholder="Add a ticker, e.g. NVDA",
                          label_visibility="collapsed")
@@ -961,7 +961,7 @@ if wc2.button("+ Add to watchlist", use_container_width=True) and _wl_raw.strip(
     if added:
         st.session_state["refresh_msg"] = (
             "success", f"Added **{added}** to your watchlist. "
-                       f"Click **📥 Sync history** up top to pull its chart data.")
+                       f"Click **Sync history** up top to pull its chart data.")
     else:
         st.session_state["refresh_msg"] = ("error", f"'{_wl_raw}' doesn't look like a valid ticker.")
     st.rerun()
@@ -1038,8 +1038,8 @@ if _pill_sym:
 
         if len(_rows) < 2:
             st.info(f"Not enough history for **{_sym}** in this range yet. Click "
-                    "**📥 Sync history** up top for real intraday + daily bars, or keep "
-                    "hitting **🔄 Refresh prices**.")
+                    "**Sync history** up top for real intraday + daily bars, or keep "
+                    "hitting **Refresh prices**.")
         else:
             tdf = pd.DataFrame(_rows)
             tdf["t"] = pd.to_datetime(tdf["t"], utc=True, format="mixed")
@@ -1085,7 +1085,7 @@ if _pill_sym:
                 st.caption(
                     f"{len(win)}" + (f" of {len(full)}" if len(win) != len(full) else "") + " points · "
                     + (f"**{_res_label}** Yahoo bars." if _has_yahoo
-                       else "sparse Refresh-prices history — **📥 Sync history** for real bars.")
+                       else "sparse Refresh-prices history — **Sync history** for real bars.")
                     + (f"  ·  *{rng} is shorter than the data interval — showing the last {len(win)}.*"
                        if _short else "")
                 )
@@ -1116,7 +1116,7 @@ if _pill_sym:
             pc7.metric("% of Portfolio", fmt_pct(_pct_port))
             pc8.metric("Account", _pos.get("account") or "—")
         else:
-            st.markdown("#### ★ On your watchlist")
+            st.markdown("#### On your watchlist")
             st.caption("Not a position you own — tracking it for the chart and stats only.")
 
             def _remove_from_watchlist(sym=_sym):
@@ -1131,7 +1131,7 @@ if _pill_sym:
                     _wl_conn.close()
                 st.session_state["watchlist_pill"] = None
 
-            st.button("✕ Remove from watchlist", key="wl_remove_from_detail",
+            st.button("Remove from watchlist", key="wl_remove_from_detail",
                      on_click=_remove_from_watchlist)
 
         # ---- stats: day range, fundamentals, income -------------------- #
@@ -1145,14 +1145,14 @@ if _pill_sym:
         ])
         if not perf.has_bars(DB):
             st.caption("Fundamentals (52-wk range, beta, P/E, market cap, sector, moving averages) "
-                       "fill in after you click **📥 Sync history** up top.")
+                       "fill in after you click **Sync history** up top.")
 
         # ---- news: cached Finnhub headlines, fetched when stale --------- #
-        st.markdown("#### 📰 Recent News")
+        st.markdown("#### Recent News")
         _news_key = resolve_key(None, ENV_PATH)
         if not _news_key:
             st.caption("No `FINNHUB_API_KEY` in `.env` — news uses the same key as "
-                       "**🔄 Refresh prices**.")
+                       "**Refresh prices**.")
         else:
             _news_conn = connect(DB)
             try:
@@ -1178,7 +1178,7 @@ else:
     st.divider()
 
 # ---- activity: inferred transaction history --------------------------- #
-st.subheader("📜 Activity")
+st.subheader("Activity")
 
 _txn_conn = connect(DB)
 try:
@@ -1242,10 +1242,10 @@ else:
             "Amount": t["amount"], "Realized G/L": t["realized_gain"], "Account": t["account"],
         } for t in _filtered])
         st.download_button(
-            "⬇ Download CSV", _tdf_raw.to_csv(index=False).encode("utf-8"),
+            "Download CSV", _tdf_raw.to_csv(index=False).encode("utf-8"),
             file_name="activity.csv", mime="text/csv", key="activity_dl",
             disabled=hide_amounts, help=(
-                "Disabled while amounts are hidden — turn off 🙈 Hide amounts to export real figures."
+                "Disabled while amounts are hidden — turn off Hide amounts to export real figures."
                 if hide_amounts else None),
         )
         st.caption("Inferred from the quantity change between imported snapshots, not broker "
@@ -1255,7 +1255,7 @@ else:
 st.divider()
 
 # ---- income: dividend yield summary + per-position breakdown ---------- #
-st.subheader("💰 Income")
+st.subheader("Income")
 
 _income_rows = []
 for p, ctx in zip(positions, contexts):
@@ -1299,10 +1299,10 @@ else:
     } for r in _income_rows])
     st.dataframe(_idf, use_container_width=True, hide_index=True)
     st.download_button(
-        "⬇ Download CSV", _idf_raw.to_csv(index=False).encode("utf-8"),
+        "Download CSV", _idf_raw.to_csv(index=False).encode("utf-8"),
         file_name="income.csv", mime="text/csv", key="income_dl",
         disabled=hide_amounts, help=(
-            "Disabled while amounts are hidden — turn off 🙈 Hide amounts to export real figures."
+            "Disabled while amounts are hidden — turn off Hide amounts to export real figures."
             if hide_amounts else None),
     )
     st.caption("Est. Annual Income = market value × dividend yield, both as reported in the CSV "
