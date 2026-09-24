@@ -62,11 +62,28 @@ def _login() -> bool:
     return False
 
 
+def _logout():
+    # Full session_state reset, not just clearing user_id/username - every
+    # other key (hide_amounts, col_keys, last_open_snapshot, pill
+    # selections, etc.) was populated for the PREVIOUS account and would
+    # otherwise leak into the next login on the same browser tab even
+    # though each account's own on-disk prefs file is already correctly
+    # separated (PREFS_PATH is per-user) - the in-memory session state
+    # isn't, unless explicitly cleared here. No st.rerun() needed - an
+    # on_click callback is always followed by an automatic rerun, and
+    # calling it explicitly here just logs a "no-op" warning.
+    st.session_state.clear()
+
+
 if not _login():
     st.stop()
 
 USER_ID = st.session_state["user_id"]
 PREFS_PATH = os.path.join(HERE, f".dashboard_prefs.{USER_ID}.json")
+
+with st.sidebar:
+    st.caption(f"Logged in as **{st.session_state['username']}**")
+    st.button("Log out", on_click=_logout, use_container_width=True)
 
 
 def _anthropic_key() -> str | None:
