@@ -370,7 +370,8 @@ def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int) -> dict:
             "DELETE FROM snapshots WHERE snapshot_date = ? AND source_file <> ? AND user_id = ?",
             (snapshot_date, src, user_id))
         conn.execute(
-            "INSERT INTO snapshots (snapshot_date, as_of_text, source_file, user_id) VALUES (?, ?, ?, ?) "
+            "INSERT INTO snapshots (snapshot_date, as_of_text, source_file, user_id, imported_at) "
+            "VALUES (?, ?, ?, ?, datetime('now')) "
             "ON CONFLICT(snapshot_date, source_file, user_id) DO UPDATE SET "
             "as_of_text = excluded.as_of_text, imported_at = datetime('now')",
             (snapshot_date, meta["as_of_text"], src, user_id),
@@ -380,17 +381,22 @@ def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int) -> dict:
         conn.execute("DELETE FROM account_totals WHERE snapshot_date = ? AND user_id = ?",
                      (snapshot_date, user_id))
 
+        # imported_at is set explicitly here (not left to the column's own
+        # DEFAULT) on all three INSERTs in this function - the multi-user
+        # migration's table rebuild silently dropped that DEFAULT on the
+        # live database (reproduced live: NOT NULL violation on every
+        # import), so never depend on it existing.
         pos_cols = POSITION_COLS + ["user_id"]
         ph = ", ".join("?" for _ in pos_cols)
         conn.executemany(
-            f"INSERT INTO positions ({', '.join(pos_cols)}) VALUES ({ph})",
+            f"INSERT INTO positions ({', '.join(pos_cols)}, imported_at) VALUES ({ph}, datetime('now'))",
             [tuple((src if c == "source_file" else user_id if c == "user_id" else r.get(c))
                    for c in pos_cols) for r in rows],
         )
         conn.executemany(
             "INSERT INTO account_totals (snapshot_date, account, cash_value, reported_cost_basis, "
-            "reported_market_value, reported_gain, reported_gain_pct, source_file, user_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "reported_market_value, reported_gain, reported_gain_pct, source_file, user_id, imported_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
             [(snapshot_date, acct, t["cash_value"], t["reported_cost_basis"],
               t["reported_market_value"], t["reported_gain"], t["reported_gain_pct"], src, user_id)
              for acct, t in totals.items()],
