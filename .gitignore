@@ -29,3 +29,7 @@ logs/
 
 # Claude Code local tooling config - not part of the app
 .claude/
+
+# Local scratch files (exported holdings/accounts may contain real data)
+Claude outputs/
+mock_positions*.csv
