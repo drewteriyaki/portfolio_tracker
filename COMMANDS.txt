@@ -122,8 +122,12 @@ different username.
 
 REFRESHING LIVE PRICES  (update_prices.py)
 ---------------------------------------------
-Pull live Finnhub quotes for one account's holdings (--user is required):
+Pull live Finnhub quotes for one account's holdings:
   python update_prices.py --user <username>
+
+Or for every account at once (each ticker is fetched only once, however
+many accounts hold it - this is what the scheduled jobs run):
+  python update_prices.py --all-users
 
 (Or double-click update-prices.cmd for your own local default account —
 check the .cmd file's contents if you want to see exactly what it runs.)
@@ -143,7 +147,9 @@ RUNNING THE TEST SUITE
 ------------------------
   python -m unittest discover -s tests
 
-(84 tests as of this writing. Always run this before pushing changes.)
+(86 tests as of this writing. Always run this before pushing changes.
+One of them fails if an API key or database password is sitting in a
+file git tracks - if it fails, remove the secret before you push.)
 
 
 GIT / DEPLOYING CHANGES
@@ -164,13 +170,12 @@ See recent history:
 SCHEDULED BACKGROUND JOBS
 ----------------------------
 Local (Windows Task Scheduler, set up once via setup-scheduled-tasks.ps1):
-  PortfolioTracker-Refresh   — live prices, every 15 min
+  PortfolioTracker-Refresh   — live prices for every account, every 15 min
   PortfolioTracker-Sync      — Yahoo history, daily 17:30
 
 Live/deployed (GitHub Actions, .github/workflows/scheduled-sync.yml):
-  refresh job  — every 15 min, market hours — needs the REFRESH_USERNAME
-                 repo secret (Settings → Secrets and variables → Actions)
-  sync job     — once daily after close, no per-account secret needed
+  refresh job  — every 15 min, market hours, every account
+  sync job     — once daily after close
   Trigger either manually: repo → Actions tab → "Scheduled sync
   (hosted Postgres)" → Run workflow
 
@@ -189,8 +194,8 @@ GitHub Actions:         repo → Settings → Secrets and variables → Actions
                          roughly 1-2 cents per message; capped at 40
                          messages per conversation).
   DATABASE_URL        — Neon connection string (Streamlit Cloud + Actions)
-  REFRESH_USERNAME    — which account the scheduled price-refresh job
-                         updates (GitHub Actions only)
+  (REFRESH_USERNAME is no longer used - the refresh job covers every
+   account now. You can delete it from GitHub Actions secrets.)
 
 
 QUICK ONE-OFF DATABASE CHECKS (Python)

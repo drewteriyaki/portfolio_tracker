@@ -160,20 +160,12 @@ def apply_live_prices(conn: sqlite3.Connection, snapshot: str, user_id: int,
     return updated
 
 
-def refresh_prices(conn: sqlite3.Connection, snapshot: str, user_id: int, key: str, *,
-                   delay: float = 0.25, timeout: float = 10.0, on_quote=None) -> dict:
-    """Fetch a quote for every distinct ticker `user_id` holds, append to
-    price_history (global, shared across users), and rewrite the live_*
-    columns for `user_id`'s `snapshot`.
-
-    on_quote(i, total, ticker, ok, price, error) is called after each fetch.
-    Returns {snapshot, tickers, ok, failed, results, updated, applied_at}.
-    """
-    tickers = [r["symbol"] for r in conn.execute(
-        "SELECT DISTINCT symbol FROM positions WHERE user_id = ? ORDER BY symbol", (user_id,))]
-
+def _fetch_quotes(conn, tickers, key, *, delay, timeout, on_quote=None):
+    """Fetch and record one quote per ticker. Returns (fresh, results):
+    fresh = {ticker: price} for the ones that worked, results = one
+    (ticker, price|None, error|None, pct_change|None) per ticker."""
     fresh: dict[str, float] = {}
-    results = []  # (ticker, price|None, error|None, pct_change|None)
+    results = []
     for i, ticker in enumerate(tickers):
         data, error = fetch_quote(ticker, key, timeout)
         price = data.get("c") if data else None
@@ -190,7 +182,45 @@ def refresh_prices(conn: sqlite3.Connection, snapshot: str, user_id: int, key: s
             on_quote(i + 1, len(tickers), ticker, ok, price if ok else None, error or None)
         if delay and i < len(tickers) - 1:
             time.sleep(delay)
+    return fresh, results
 
+
+def refresh_all_users(conn: sqlite3.Connection, key: str, *, delay: float = 0.25,
+                      timeout: float = 10.0, on_quote=None) -> dict:
+    """Refresh every account with positions: each distinct ticker across all
+    accounts' latest snapshots is fetched once (keeps within Finnhub's free
+    rate limit however many accounts hold it), then applied to each account.
+    Returns {tickers, ok, failed, results, updated_by_user, applied_at}."""
+    snapshots = {}
+    for r in conn.execute("SELECT DISTINCT user_id FROM positions WHERE user_id IS NOT NULL"):
+        snap = latest_snapshot(conn, r["user_id"])
+        if snap:
+            snapshots[r["user_id"]] = snap
+    tickers = sorted({r["symbol"] for uid, snap in snapshots.items() for r in conn.execute(
+        "SELECT DISTINCT symbol FROM positions WHERE user_id = ? AND snapshot_date = ?",
+        (uid, snap))})
+    fresh, results = _fetch_quotes(conn, tickers, key, delay=delay, timeout=timeout,
+                                   on_quote=on_quote)
+    applied_at = utc_now_iso()
+    updated = {uid: (apply_live_prices(conn, snap, uid, fresh, applied_at) if fresh else 0)
+               for uid, snap in snapshots.items()}
+    return {"tickers": len(tickers), "ok": len(fresh), "failed": len(tickers) - len(fresh),
+            "results": results, "updated_by_user": updated, "applied_at": applied_at}
+
+
+def refresh_prices(conn: sqlite3.Connection, snapshot: str, user_id: int, key: str, *,
+                   delay: float = 0.25, timeout: float = 10.0, on_quote=None) -> dict:
+    """Fetch a quote for every distinct ticker `user_id` holds, append to
+    price_history (global, shared across users), and rewrite the live_*
+    columns for `user_id`'s `snapshot`.
+
+    on_quote(i, total, ticker, ok, price, error) is called after each fetch.
+    Returns {snapshot, tickers, ok, failed, results, updated, applied_at}.
+    """
+    tickers = [r["symbol"] for r in conn.execute(
+        "SELECT DISTINCT symbol FROM positions WHERE user_id = ? ORDER BY symbol", (user_id,))]
+    fresh, results = _fetch_quotes(conn, tickers, key, delay=delay, timeout=timeout,
+                                   on_quote=on_quote)
     applied_at = utc_now_iso()
     updated = apply_live_prices(conn, snapshot, user_id, fresh, applied_at) if fresh else 0
     return {
@@ -216,8 +246,10 @@ def latest_snapshot(conn: sqlite3.Connection, user_id: int) -> str | None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Fetch live Finnhub prices and update unrealized G/L.")
     ap.add_argument("--db", default=DEFAULT_DB, help=f"SQLite file (default: {DEFAULT_DB})")
-    ap.add_argument("--user", required=True, help="account username to refresh prices for "
-                                                    "(see manage_users.py)")
+    who = ap.add_mutually_exclusive_group(required=True)
+    who.add_argument("--user", help="account username to refresh prices for (see manage_users.py)")
+    who.add_argument("--all-users", action="store_true",
+                     help="refresh every account with positions, fetching each ticker once")
     ap.add_argument("--env", default=ENV_PATH, help="path to .env (default: alongside this script)")
     ap.add_argument("--key", help="API key override (otherwise .env, then $FINNHUB_API_KEY)")
     ap.add_argument("--snapshot", help="snapshot date to update (default: latest)")
@@ -240,6 +272,17 @@ def main(argv=None) -> int:
 
     import auth
     conn = connect(args.db)
+    if args.all_users:
+        def show_all(i, total, ticker, ok, price, error):
+            print(f"  {ticker:<8} {money(price) if ok else '--':>12}   {'' if ok else error}")
+        print(f"Fetching Finnhub quotes for all accounts (key ...{key[-4:]}):\n")
+        summary = refresh_all_users(conn, key, delay=args.delay, timeout=args.timeout,
+                                    on_quote=show_all)
+        print(f"\n{summary['ok']} quote(s) stored, {summary['failed']} failed.")
+        for uid, n in summary["updated_by_user"].items():
+            print(f"  {auth.get_username(conn, uid) or uid}: {n} position(s) updated")
+        return 0 if summary["ok"] else 1
+
     user_id = auth.get_user_id(conn, args.user)
     if user_id is None:
         raise SystemExit(f"No such user '{args.user}' - create one first: "

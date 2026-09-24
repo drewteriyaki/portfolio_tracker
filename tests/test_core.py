@@ -557,26 +557,22 @@ class AuthTests(TempDBMixin, unittest.TestCase):
         self.assertEqual(perf.last_open(self.db, user_b)["portfolio_value"], 222)
 
 
-class _FakeHttpResponse:
-    """Minimal urllib.request.urlopen() context-manager stand-in."""
+class _FakeCreateClient:
+    """Stands in for anthropic.Anthropic for a single messages.create() call."""
 
-    def __init__(self, body: bytes):
-        self._body = body
+    def __init__(self, text):
+        self._text = text
+        self.messages = self
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def read(self):
-        return self._body
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        return _Obj(content=[_Obj(type="text", text=self._text)])
 
 
-def _fake_anthropic_response(mapping_dict_or_text) -> bytes:
+def _fake_anthropic_response(mapping_dict_or_text) -> "_FakeCreateClient":
     text = (mapping_dict_or_text if isinstance(mapping_dict_or_text, str)
             else json.dumps(mapping_dict_or_text))
-    return json.dumps({"content": [{"type": "text", "text": text}]}).encode("utf-8")
+    return _FakeCreateClient(text)
 
 
 class AiParseTests(unittest.TestCase):
@@ -591,8 +587,7 @@ class AiParseTests(unittest.TestCase):
 
     def test_map_columns_accepts_a_valid_response(self):
         body = _fake_anthropic_response(self._valid_mapping())
-        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
-            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        mapping, error = ai_parse.map_columns(self.HEADER, "fake-key", client=body)
         self.assertEqual(error, "")
         self.assertEqual(mapping["symbol"], 0)
         self.assertEqual(mapping["quantity"], 2)
@@ -601,8 +596,7 @@ class AiParseTests(unittest.TestCase):
     def test_map_columns_strips_a_markdown_fence(self):
         fenced = "```json\n" + json.dumps(self._valid_mapping()) + "\n```"
         body = _fake_anthropic_response(fenced)
-        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
-            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        mapping, error = ai_parse.map_columns(self.HEADER, "fake-key", client=body)
         self.assertEqual(error, "")
         self.assertEqual(mapping["symbol"], 0)
 
@@ -610,8 +604,7 @@ class AiParseTests(unittest.TestCase):
         m = self._valid_mapping()
         m["symbol"] = None  # required field left unmapped
         body = _fake_anthropic_response(m)
-        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
-            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        mapping, error = ai_parse.map_columns(self.HEADER, "fake-key", client=body)
         self.assertIsNone(mapping)
         self.assertIn("symbol", error)
 
@@ -619,15 +612,13 @@ class AiParseTests(unittest.TestCase):
         m = self._valid_mapping()
         m["symbol"] = 99  # header only has 6 columns
         body = _fake_anthropic_response(m)
-        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
-            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        mapping, error = ai_parse.map_columns(self.HEADER, "fake-key", client=body)
         self.assertIsNone(mapping)
         self.assertIn("symbol", error)
 
     def test_map_columns_rejects_unparseable_json(self):
         body = _fake_anthropic_response("this is not json at all")
-        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
-            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        mapping, error = ai_parse.map_columns(self.HEADER, "fake-key", client=body)
         self.assertIsNone(mapping)
         self.assertTrue(error)
 
@@ -981,6 +972,30 @@ class NewsTests(TempDBMixin, unittest.TestCase):
         news.upsert_news(conn, "AAPL", self.ARTICLES)
         n, err = news.sync_ticker(conn, "AAPL", token="not-a-real-key")
         self.assertEqual((n, err), (0, ""))
+        conn.close()
+
+
+class RefreshAllUsersTests(TempDBMixin, unittest.TestCase):
+    def test_each_ticker_fetched_once_and_applied_to_every_account(self):
+        conn = portfolio.connect(self.db)
+        other = auth.create_user(conn, "other", "pw")
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
+        shutil.copyfile(FIXTURE, os.path.join(self.dir, "other.csv"))
+        portfolio.import_csv(conn, os.path.join(self.dir, "other.csv"), other)
+
+        fetched = []
+
+        def fake_quote(ticker, key, timeout):
+            fetched.append(ticker)
+            return {"c": 50.0, "pc": 49.0, "d": 1.0, "dp": 2.0, "t": 1700000000}, ""
+
+        with unittest.mock.patch.object(update_prices, "fetch_quote", side_effect=fake_quote):
+            summary = update_prices.refresh_all_users(conn, "key", delay=0)
+
+        self.assertEqual(sorted(fetched), ["AAA", "BBB", "CCC"])     # once each, not per account
+        self.assertEqual(summary["updated_by_user"], {self.user_id: 3, other: 3})
+        prices = {r["live_price"] for r in conn.execute("SELECT live_price FROM positions")}
+        self.assertEqual(prices, {50.0})
         conn.close()
 
 

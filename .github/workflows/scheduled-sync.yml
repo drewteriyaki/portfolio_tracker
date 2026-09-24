@@ -8,14 +8,12 @@ name: Scheduled sync (hosted Postgres)
 # through pgcompat.py automatically, so these are the exact same scripts
 # used locally, just pointed at Postgres instead of a file path.
 #
-# Requires three repo secrets (Settings -> Secrets and variables -> Actions):
+# Requires two repo secrets (Settings -> Secrets and variables -> Actions):
 #   DATABASE_URL      the Neon connection string
 #   FINNHUB_API_KEY   for the price refresh job
-#   REFRESH_USERNAME  which account's positions to refresh live prices for
-#                      (update_prices.py needs --user now that positions are
-#                      per-account - see manage_users.py). sync_history.py
-#                      stays account-agnostic: market data (daily/intraday
-#                      bars, fundamentals) is shared across every account.
+# The refresh job covers every account (--all-users, each ticker fetched
+# once); sync_history.py is account-agnostic too, since market data is
+# shared across accounts.
 
 on:
   schedule:
@@ -41,8 +39,7 @@ jobs:
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          REFRESH_USERNAME: ${{ secrets.REFRESH_USERNAME }}
-        run: python update_prices.py --db "$DATABASE_URL" --user "$REFRESH_USERNAME"
+        run: python update_prices.py --db "$DATABASE_URL" --all-users
 
   sync:
     if: github.event.schedule == '30 21 * * 1-5' || github.event_name == 'workflow_dispatch'

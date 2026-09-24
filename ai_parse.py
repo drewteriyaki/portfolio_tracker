@@ -12,10 +12,9 @@ account's cash line vs. its totals line) stays as ordinary Python
 pattern-matching on generic substrings ("total", "cash") - also not
 something that needs AI, and one less thing to send over the network.
 
-Standard library only (urllib), same pattern as news.py/update_prices.py's
-Finnhub clients - this module is only imported when the strict parser
-has already failed and an ANTHROPIC_API_KEY is configured, so local
-development and every normal import never touches it.
+Uses the official anthropic SDK (same client as the AI Assistant). This
+module is only imported when the strict parser has already failed and an
+ANTHROPIC_API_KEY is configured, so every normal import never touches it.
 """
 
 from __future__ import annotations
@@ -23,13 +22,9 @@ from __future__ import annotations
 import csv
 import json
 import re
-import urllib.error
-import urllib.request
 
 from portfolio import COL, extract_snapshot_date, parse_num, parse_text, parse_yesno
 
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_VERSION = "2023-06-01"
 MODEL = "claude-haiku-4-5-20251001"  # fastest/cheapest - this is a small structured-output task
 MAX_TOKENS = 500  # response is just a compact JSON mapping, nothing else
 
@@ -77,43 +72,33 @@ def guess_header_row(path: str) -> list[str] | None:
     return None
 
 
-def map_columns(header_row: list[str], api_key: str, *, timeout: float = 15.0):
+def map_columns(header_row: list[str], api_key: str, *, timeout: float = 15.0, client=None):
     """Ask Claude which column index holds each field. Returns (mapping, error)
     - exactly one is truthy. `mapping` is {field_name: int | None}, validated:
     every key present, every value either None or a real index into
-    `header_row`, and every REQUIRED_FIELDS entry non-None."""
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": MAX_TOKENS,
-        "system": _SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": json.dumps(header_row)}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        ANTHROPIC_URL, data=body, method="POST",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        })
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = json.loads(exc.read().decode("utf-8", "replace")).get("error", {}).get("message", "")
-        except Exception:
-            pass
-        return None, f"HTTP {exc.code}" + (f": {detail}" if detail else "")
-    except urllib.error.URLError as exc:
-        return None, f"network error: {exc.reason}"
-    except TimeoutError:
-        return None, "timeout"
+    `header_row`, and every REQUIRED_FIELDS entry non-None. `client` is for
+    tests; normally one is built from `api_key`."""
+    import anthropic
 
+    client = client or anthropic.Anthropic(api_key=api_key, timeout=timeout)
     try:
-        raw_text = data["content"][0]["text"]
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": json.dumps(header_row)}],
+        )
+    except anthropic.APIStatusError as exc:
+        return None, f"HTTP {exc.status_code}: {exc.message}"
+    except anthropic.APITimeoutError:
+        return None, "timeout"
+    except anthropic.APIConnectionError:
+        return None, "network error"
+
+    raw_text = next((b.text for b in response.content if b.type == "text"), "")
+    try:
         mapping = json.loads(_extract_json(raw_text))
-    except (KeyError, IndexError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return None, "unparseable response from the model"
 
     if not isinstance(mapping, dict):

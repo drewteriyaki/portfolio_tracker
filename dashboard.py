@@ -161,7 +161,7 @@ def _set_client_password():
 with st.sidebar:
     st.markdown("### Portfolio Tracker")
     for _p in PAGES:
-        st.button(_p, key=f"nav_{_p}", on_click=_go, args=(_p,), use_container_width=True,
+        st.button(_p, key=f"nav_{_p}", on_click=_go, args=(_p,), width="stretch",
                   type="primary" if st.session_state["page"] == _p else "tertiary")
     st.divider()
 
@@ -178,19 +178,19 @@ with st.sidebar:
             st.text_input("Login password (optional)", type="password", key="new_client_pw",
                           help="Leave blank for a client you manage without them logging in. "
                                "You can give them a login later.")
-            st.button("Add client", on_click=_add_client, use_container_width=True)
+            st.button("Add client", on_click=_add_client, width="stretch")
         if USER_ID != LOGIN_ID:
             with st.expander("Client login"):
                 st.caption(f"Set a password so **{ACTIVE_NAME}** can log in and see their own "
                            "portfolio.")
                 st.text_input("New password", type="password", key="client_login_pw")
                 st.button("Set login password", on_click=_set_client_password,
-                          use_container_width=True)
+                          width="stretch")
         st.divider()
 
     _viewing = f" · viewing **{ACTIVE_NAME}**" if USER_ID != LOGIN_ID else ""
     st.caption(f"Logged in as **{st.session_state['username']}**{_viewing}")
-    st.button("Log out", on_click=_logout, use_container_width=True)
+    st.button("Log out", on_click=_logout, width="stretch")
 
 PAGE = st.session_state["page"]
 
@@ -281,7 +281,7 @@ def _render_assistant(contexts, cash_by_account):
     if not display:
         cols = st.columns(len(QUICK_STARTS))
         for col, (label, text) in zip(cols, QUICK_STARTS.items()):
-            if col.button(label, use_container_width=True, key=f"quick_{label}"):
+            if col.button(label, width="stretch", key=f"quick_{label}"):
                 prompt = text
 
     n_sent = sum(1 for m in display if m["role"] == "user")
@@ -679,7 +679,7 @@ if hide_amounts != _read_prefs().get("hide_amounts", False):
     save_hide(hide_amounts)
 with right:
     st.write("")
-    if st.button("Refresh prices", type="primary", use_container_width=True):
+    if st.button("Refresh prices", type="primary", width="stretch"):
         key = resolve_key(None, ENV_PATH)
         if not key:
             st.session_state["refresh_msg"] = ("error", "No FINNHUB_API_KEY in .env — add it and retry.")
@@ -706,7 +706,7 @@ with right:
                 "success", f"Updated {summary['updated']} positions from {summary['ok']} live quotes.")
         st.rerun()
 
-    if st.button("Sync history (Yahoo)", use_container_width=True,
+    if st.button("Sync history (Yahoo)", width="stretch",
                  help="Pull the maximum history Yahoo allows at every resolution it offers - "
                       "~2 years daily, plus 1-minute (~7d), 5- and 15-minute (~60d), and "
                       "hourly (~2y) bars - plus fundamentals. Takes a minute or two. Powers "
@@ -770,7 +770,7 @@ if PAGE == "Dashboard":
 
     al, ar = st.columns([0.8, 0.2])
     al.subheader(f"Alerts ({len(_fired)})")
-    with ar.popover("Rules", use_container_width=True):
+    with ar.popover("Rules", width="stretch"):
         _new = []
         for _r in alerts.DEFAULT_RULES:
             cur = next((x["abs_gt"] for x in _rules if x["key"] == _r["key"]), _r["abs_gt"])
@@ -869,18 +869,18 @@ if PAGE == "Dashboard":
                         st.markdown("**New positions**")
                         st.dataframe(_tbl(d["new"], ["account", "symbol", "description",
                                                     "new_qty", "new_cost", "new_mv"]),
-                                     hide_index=True, use_container_width=True)
+                                     hide_index=True, width="stretch")
                     if n_changed:
                         st.markdown("**Quantity changes**")
                         st.dataframe(_tbl(d["increased"] + d["decreased"],
                                           ["account", "symbol", "old_qty", "new_qty", "dqty",
                                            "old_mv", "new_mv"]),
-                                     hide_index=True, use_container_width=True)
+                                     hide_index=True, width="stretch")
                     if d["closed"]:
                         st.markdown("**Closed positions**")
                         st.dataframe(_tbl(d["closed"], ["account", "symbol", "description",
                                                         "old_qty", "old_mv"]),
-                                     hide_index=True, use_container_width=True)
+                                     hide_index=True, width="stretch")
 
                     txns = synthesize_transactions(d, file_date, os.path.abspath(src_path))
                     st.caption(
@@ -984,7 +984,7 @@ if PAGE == "Dashboard":
                     mask=hide_amounts, compress_gaps=bool(_pcompress),
                     line_color=perf.SOURCE_COLOR["reconstructed"],
                     tooltip=_ptips),
-                use_container_width=True,
+                width="stretch",
             )
             _covered, _missing = perf.holdings_coverage(DB, USER_ID)
             st.caption(
@@ -1028,7 +1028,7 @@ if PAGE == "Dashboard":
     al1, al2 = st.columns([0.75, 0.25])
     al1.subheader("Allocation")
     _asset_labels = [r["label"] for r in alloc["by_asset_type"]]
-    with al2.popover("Targets", use_container_width=True):
+    with al2.popover("Targets", width="stretch"):
         st.caption("Set a target % of portfolio for any asset type — leave at 0 for no target.")
         _saved_targets = load_alloc_targets()
         _new_targets = {}
@@ -1048,9 +1048,9 @@ if PAGE == "Dashboard":
     c1 = _alloc_chart(alloc["by_asset_type"], "By asset type")
     c2 = _alloc_chart(_short_acct(alloc["by_account"]), "By account")
     if c1 is not None:
-        a1.altair_chart(c1, use_container_width=True)
+        a1.altair_chart(c1, width="stretch")
     if c2 is not None:
-        a2.altair_chart(c2, use_container_width=True)
+        a2.altair_chart(c2, width="stretch")
 
     if alloc["concentration"]:
         lines = "  \n".join(
@@ -1136,7 +1136,7 @@ if PAGE == "Dashboard":
             .apply(lambda col: [color_sign(v) for v in _gain_raw], subset=["Gain/Loss"])
             .apply(lambda col: [color_sign(v) for v in _today_raw], subset=["Today"])
         )
-        st.dataframe(_acct_styler, use_container_width=True, hide_index=True)
+        st.dataframe(_acct_styler, width="stretch", hide_index=True)
         st.download_button(
             "Download CSV", _adf_raw.to_csv(index=False).encode("utf-8"),
             file_name="accounts.csv", mime="text/csv", key="accounts_dl",
@@ -1153,7 +1153,7 @@ if PAGE == "Dashboard":
             _acct_alloc = allocate(_acct_positions, _acct_cash)
             _c = _alloc_chart(_acct_alloc["by_asset_type"], _a.replace("Individual ", "").strip())
             if _c is not None:
-                _col.altair_chart(_c, use_container_width=True)
+                _col.altair_chart(_c, width="stretch")
 
     st.divider()
 
@@ -1163,7 +1163,7 @@ if PAGE == "Dashboard":
 
     h1, h2 = st.columns([0.75, 0.25])
     h1.subheader("Holdings")
-    with h2.popover("Columns", use_container_width=True):
+    with h2.popover("Columns", width="stretch"):
         labels = st.multiselect(
             "Columns — add or remove as many as you want",
             [m.label for m in M.AVAILABLE],
@@ -1221,7 +1221,7 @@ if PAGE == "Dashboard":
     styler = df.style.format(fmt_map, na_rep="—")
     if color_cols:
         styler = styler.map(color_sign, subset=color_cols)
-    st.dataframe(styler, use_container_width=True, hide_index=True)
+    st.dataframe(styler, width="stretch", hide_index=True)
     st.download_button(
         "Download CSV", df.to_csv(index=False).encode("utf-8"),
         file_name="holdings.csv", mime="text/csv", key="holdings_dl",
@@ -1241,7 +1241,7 @@ if PAGE == "Watchlist":
     _wl_raw = wc1.text_input("Add a ticker", key="wl_add_input", placeholder="Add a ticker, e.g. NVDA",
                              label_visibility="collapsed")
     wc2.write("")
-    if wc2.button("+ Add to watchlist", use_container_width=True) and _wl_raw.strip():
+    if wc2.button("+ Add to watchlist", width="stretch") and _wl_raw.strip():
         _wl_conn = connect(DB)
         try:
             added = watchlist.add(_wl_conn, USER_ID, _wl_raw)
@@ -1370,7 +1370,7 @@ if PAGE in ("Dashboard", "Watchlist"):
                         charts.line(win, x="t", y=tk_col, y_title=_title, y_format=AXIS_FORMAT[_fname],
                                     overlays=mas, tooltip=_tips, mask=hide_amounts,
                                     compress_gaps=(_interval in ("1m", "5m", "15m", "60m"))),
-                        use_container_width=True,
+                        width="stretch",
                     )
                     _res_label = perf.INTERVAL_LABEL.get(_interval, _interval)
                     st.caption(
@@ -1528,7 +1528,7 @@ if PAGE == "Activity":
                 .apply(lambda col: [color_sign(v) for v in _amount_raw], subset=["Amount"])
                 .apply(lambda col: [color_sign(v) for v in _gain_raw], subset=["Realized G/L"])
             )
-            st.dataframe(_txn_styler, use_container_width=True, hide_index=True)
+            st.dataframe(_txn_styler, width="stretch", hide_index=True)
             _tdf_raw = pd.DataFrame([{
                 "Date": t["trade_date"], "Action": t["action"], "Symbol": t["symbol"],
                 "Description": t["description"], "Qty": t["quantity"], "Price": t["price"],
@@ -1590,7 +1590,7 @@ if PAGE == "Income":
             "Last Pay Date": r["last_pay_date"] or "—", "Reinvest": r["reinvest"] or "—",
             "Account": r["account"],
         } for r in _income_rows])
-        st.dataframe(_idf, use_container_width=True, hide_index=True)
+        st.dataframe(_idf, width="stretch", hide_index=True)
         st.download_button(
             "Download CSV", _idf_raw.to_csv(index=False).encode("utf-8"),
             file_name="income.csv", mime="text/csv", key="income_dl",
