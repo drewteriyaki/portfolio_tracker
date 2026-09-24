@@ -1,0 +1,154 @@
+PORTFOLIO TRACKER — COMMAND REFERENCE
+======================================
+Run everything from the project folder:
+  cd "C:\Users\drewt\OneDrive\Documents\2026\AI Projects\portfolio-tracker"
+
+All commands below use your LOCAL database (portfolio.db) by default.
+To run any of them against your LIVE Neon database instead, add:
+  --db "<your Neon connection string>"
+(get the exact string from your Neon console — never paste it into a file
+that gets committed to git)
+
+
+RUNNING THE DASHBOARD
+----------------------
+Local:
+  streamlit run dashboard.py
+  (or double-click dashboard.cmd)
+
+Against a different database (e.g. a throwaway test copy):
+  set PORTFOLIO_DB=path\to\other.db
+  streamlit run dashboard.py
+
+The live deployed app auto-redeploys whenever you push to GitHub's main
+branch — see "DEPLOYING CHANGES" below. If it shows a stale error after
+a push, go to the app → "Manage app" → Reboot.
+
+
+MANAGING LOGIN ACCOUNTS  (manage_users.py)
+--------------------------------------------
+Create one account (prompts for password, hidden as you type):
+  python manage_users.py create <username>
+
+Change a password:
+  python manage_users.py passwd <username>
+
+List all accounts:
+  python manage_users.py list
+
+Create several accounts at once from a text file (one per line, either
+"username" alone for a random generated password, or "username,password"
+for one you chose — passwords are shown ONCE in the output, save them):
+  python manage_users.py bulk-create accounts.txt
+
+Against the live database:
+  python manage_users.py --db "<Neon connection string>" create <username>
+  python manage_users.py --db "<Neon connection string>" list
+
+
+IMPORTING A CSV  (portfolio.py)
+----------------------------------
+Import a Positions export for a specific account (--user is required):
+  python portfolio.py import "path\to\export.csv" --user <username>
+
+Check parsed holdings reconcile against the file's own totals:
+  python portfolio.py verify --user <username>
+  python portfolio.py verify --snapshot 2026-09-24 --user <username>
+
+Print an unrealized gain/loss summary:
+  python portfolio.py report
+  python portfolio.py report --snapshot 2026-09-24
+
+(Note: import/verify write/read data scoped to one account via --user.
+report is a general local-debugging summary and isn't account-scoped.)
+
+Double-click shortcuts (import.cmd, update-prices.cmd) default to
+--user admin1 — edit the .cmd file if your local account uses a
+different username.
+
+
+REFRESHING LIVE PRICES  (update_prices.py)
+---------------------------------------------
+Pull live Finnhub quotes for one account's holdings (--user is required):
+  python update_prices.py --user <username>
+
+(Or double-click update-prices.cmd for your own local default account —
+check the .cmd file's contents if you want to see exactly what it runs.)
+
+
+SYNCING DEEP HISTORY  (sync_history.py)
+-------------------------------------------
+Pulls ~2 years of daily bars + intraday bars + fundamentals for every
+held/watchlisted ticker across ALL accounts (this one is NOT per-account
+— market data is shared):
+  python sync_history.py
+
+(Or double-click sync-history.cmd. Takes a couple of minutes.)
+
+
+RUNNING THE TEST SUITE
+------------------------
+  python -m unittest discover -s tests
+
+(72 tests as of this writing. Always run this before pushing changes.)
+
+
+GIT / DEPLOYING CHANGES
+--------------------------
+Check what's changed:
+  git status
+  git diff
+
+Stage, commit, push (pushing to main auto-redeploys the live app):
+  git add -A
+  git commit -m "describe the change"
+  git push
+
+See recent history:
+  git log --oneline -10
+
+
+SCHEDULED BACKGROUND JOBS
+----------------------------
+Local (Windows Task Scheduler, set up once via setup-scheduled-tasks.ps1):
+  PortfolioTracker-Refresh   — live prices, every 15 min
+  PortfolioTracker-Sync      — Yahoo history, daily 17:30
+
+Live/deployed (GitHub Actions, .github/workflows/scheduled-sync.yml):
+  refresh job  — every 15 min, market hours — needs the REFRESH_USERNAME
+                 repo secret (Settings → Secrets and variables → Actions)
+  sync job     — once daily after close, no per-account secret needed
+  Trigger either manually: repo → Actions tab → "Scheduled sync
+  (hosted Postgres)" → Run workflow
+
+
+SECRETS CHECKLIST (where each one lives)
+--------------------------------------------
+Local dev:              .env file (see .env.example) — never committed
+Streamlit Cloud:        app → Settings → Secrets
+GitHub Actions:         repo → Settings → Secrets and variables → Actions
+
+  FINNHUB_API_KEY     — live price quotes (required for Refresh button)
+  ANTHROPIC_API_KEY   — optional, AI-assisted CSV import fallback only
+  DATABASE_URL        — Neon connection string (Streamlit Cloud + Actions)
+  REFRESH_USERNAME    — which account the scheduled price-refresh job
+                         updates (GitHub Actions only)
+
+
+QUICK ONE-OFF DATABASE CHECKS (Python)
+-------------------------------------------
+Run these with: python -c "<paste below>"   or in a script.
+
+List all accounts on the live database:
+  import os, portfolio, pgcompat
+  conn = portfolio.connect("<Neon connection string>")
+  for r in conn.execute("SELECT id, username, created_at FROM users"):
+      print(dict(r))
+  conn.close(); pgcompat.close_all_pools()
+
+Check one account's position count:
+  import portfolio, auth, pgcompat
+  conn = portfolio.connect("<Neon connection string>")
+  uid = auth.get_user_id(conn, "<username>")
+  print(conn.execute("SELECT COUNT(*) FROM positions WHERE user_id=?", (uid,)).fetchone()[0])
+  conn.close(); pgcompat.close_all_pools()

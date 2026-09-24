@@ -11,6 +11,6 @@ if "%~1"=="" (
   pause
   exit /b 1
 )
-"%PYEXE%" "%~dp0portfolio.py" import "%~1" --db "%~dp0portfolio.db"
+"%PYEXE%" "%~dp0portfolio.py" import "%~1" --db "%~dp0portfolio.db" --user admin1
 echo.
 pause
