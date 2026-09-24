@@ -126,10 +126,20 @@ class ConnWrapper:
     """Stands in for a sqlite3.Connection. `.execute()`/`.executemany()`
     return something iterable/fetchable just like sqlite3's cursor does,
     since call sites do both `conn.execute(...).fetchone()` and
-    `for row in conn.execute(...):` in different places."""
+    `for row in conn.execute(...):` in different places.
 
-    def __init__(self, raw_conn):
+    `pool` is set when this wraps a pooled connection (the normal case from
+    `connect()` below) - `.close()` then returns it to the pool instead of
+    tearing down the TCP/TLS connection, since dashboard.py's call sites all
+    follow an open/use/close pattern per Streamlit script rerun, and a fresh
+    handshake to a remote host (Neon) on every single one of those is where
+    the deployed app's real per-click latency came from - confirmed live
+    (every widget interaction reruns the whole script from the top, opening
+    and closing up to 8 separate connections each time)."""
+
+    def __init__(self, raw_conn, pool=None):
         self._conn = raw_conn
+        self._pool = pool
 
     def execute(self, sql, params=()):
         cur = self._conn.cursor()
@@ -153,7 +163,16 @@ class ConnWrapper:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        if self._pool is not None:
+            # Roll back explicitly first: a read-only call site that never
+            # called commit()/rollback() leaves the connection mid-
+            # transaction (psycopg defaults to autocommit=False), and
+            # without this the pool's own reset-on-return logs a "rolling
+            # back returned connection" warning on every single putconn.
+            self._conn.rollback()
+            self._pool.putconn(self._conn)
+        else:
+            self._conn.close()
 
     def __enter__(self):
         return self
@@ -165,7 +184,35 @@ class ConnWrapper:
             self.rollback()
 
 
+# One pool per DSN per process, created lazily on first use. Streamlit
+# Community Cloud runs this app as a single long-lived process (even across
+# separate user sessions), so a module-level dict here persists for the
+# process lifetime - exactly what a connection pool needs to actually
+# amortize handshake cost across script reruns.
+_POOLS: dict = {}
+
+
 def connect(dsn: str) -> ConnWrapper:
-    import psycopg  # imported lazily - local SQLite usage never needs this installed
-    raw = psycopg.connect(dsn, autocommit=False)
-    return ConnWrapper(raw)
+    from psycopg_pool import ConnectionPool  # imported lazily - local SQLite usage never needs this installed
+    pool = _POOLS.get(dsn)
+    if pool is None:
+        pool = ConnectionPool(dsn, min_size=1, max_size=5, kwargs={"autocommit": False}, open=True)
+        _POOLS[dsn] = pool
+    raw = pool.getconn()
+    return ConnWrapper(raw, pool=pool)
+
+
+def close_all_pools() -> None:
+    """Shut down every pool opened by connect() in this process. The
+    dashboard (a long-running server) never needs this - its pool lives for
+    the process lifetime, checked out/returned per script rerun. But a
+    one-shot CLI invocation (update_prices.py / sync_history.py, including
+    every GitHub Actions scheduled-sync run) opens a pool, uses it once,
+    and exits - without an explicit close() here, psycopg_pool's background
+    worker threads don't stop before the process's normal exit, which hangs
+    for ~5s and logs a "couldn't stop thread" warning on every single
+    scheduled run. No-op if no Postgres DSN was ever connected (e.g. every
+    local SQLite run)."""
+    for pool in _POOLS.values():
+        pool.close()
+    _POOLS.clear()

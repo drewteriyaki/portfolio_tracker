@@ -308,4 +308,11 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        # No-op unless a Postgres DSN was connected (pgcompat._POOLS empty
+        # otherwise) - closes pooled connections' background worker threads
+        # so a one-shot run (every scheduled-sync GitHub Actions job) exits
+        # immediately instead of hanging ~5s waiting for them to stop.
+        pgcompat.close_all_pools()

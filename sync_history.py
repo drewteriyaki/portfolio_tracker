@@ -310,4 +310,9 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        # No-op unless a Postgres DSN was connected - see the identical
+        # comment in update_prices.py.
+        pgcompat.close_all_pools()

@@ -24,3 +24,10 @@ yfinance==1.7.0
 # hosted-deploy path via pgcompat.py) - local SQLite usage never imports
 # this. Streamlit Community Cloud needs it in this file to install it.
 psycopg[binary]==3.2.3
+
+# Connection pooling for the Postgres path (pgcompat.connect()) - without
+# this, every dashboard.py connect()/close() pair (up to 8 per script
+# rerun - i.e. per click) opened a brand-new TCP/TLS connection to Neon,
+# which is where the deployed app's per-click lag came from. Not needed by
+# the CLI scripts (they connect once per invocation, not per click).
+psycopg-pool==3.2.4
