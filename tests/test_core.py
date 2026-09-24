@@ -6,6 +6,7 @@
 import argparse
 import contextlib
 import io
+import json
 import os
 import shutil
 import sys
@@ -17,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+import ai_parse  # noqa: E402
 import alerts  # noqa: E402
 import allocation  # noqa: E402
 import auth  # noqa: E402
@@ -550,6 +552,145 @@ class AuthTests(TempDBMixin, unittest.TestCase):
         perf.log_open(self.db, user_b, {"portfolio_value": 222}, min_gap_sec=0)
         self.assertEqual(perf.last_open(self.db, user_a)["portfolio_value"], 111)
         self.assertEqual(perf.last_open(self.db, user_b)["portfolio_value"], 222)
+
+
+class _FakeHttpResponse:
+    """Minimal urllib.request.urlopen() context-manager stand-in."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def _fake_anthropic_response(mapping_dict_or_text) -> bytes:
+    text = (mapping_dict_or_text if isinstance(mapping_dict_or_text, str)
+            else json.dumps(mapping_dict_or_text))
+    return json.dumps({"content": [{"type": "text", "text": text}]}).encode("utf-8")
+
+
+class AiParseTests(unittest.TestCase):
+    HEADER = ["Ticker", "Name", "Shares", "Basis", "Value", "Type"]
+    FULL_MAPPING = {f: None for f in ai_parse.ALL_FIELDS}
+
+    def _valid_mapping(self):
+        m = dict(self.FULL_MAPPING)
+        m.update({"symbol": 0, "description": 1, "quantity": 2,
+                  "cost_basis": 3, "market_value": 4, "asset_type": 5})
+        return m
+
+    def test_map_columns_accepts_a_valid_response(self):
+        body = _fake_anthropic_response(self._valid_mapping())
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
+            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        self.assertEqual(error, "")
+        self.assertEqual(mapping["symbol"], 0)
+        self.assertEqual(mapping["quantity"], 2)
+        self.assertEqual(mapping["reinvest"], None)  # not present in this header, correctly null
+
+    def test_map_columns_strips_a_markdown_fence(self):
+        fenced = "```json\n" + json.dumps(self._valid_mapping()) + "\n```"
+        body = _fake_anthropic_response(fenced)
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
+            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        self.assertEqual(error, "")
+        self.assertEqual(mapping["symbol"], 0)
+
+    def test_map_columns_rejects_missing_required_field(self):
+        m = self._valid_mapping()
+        m["symbol"] = None  # required field left unmapped
+        body = _fake_anthropic_response(m)
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
+            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        self.assertIsNone(mapping)
+        self.assertIn("symbol", error)
+
+    def test_map_columns_rejects_out_of_range_index(self):
+        m = self._valid_mapping()
+        m["symbol"] = 99  # header only has 6 columns
+        body = _fake_anthropic_response(m)
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
+            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        self.assertIsNone(mapping)
+        self.assertIn("symbol", error)
+
+    def test_map_columns_rejects_unparseable_json(self):
+        body = _fake_anthropic_response("this is not json at all")
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeHttpResponse(body)):
+            mapping, error = ai_parse.map_columns(self.HEADER, "fake-key")
+        self.assertIsNone(mapping)
+        self.assertTrue(error)
+
+    def test_guess_header_row_skips_title_and_blank_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "weird.csv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('"Export as of 09/24/2026"\n\nAccount 123\n')
+                fh.write("Ticker,Name,Shares,Basis,Value,Type\n")
+                fh.write("XYZ,Xyz Corp,10,100,120,Equity\n")
+            self.assertEqual(ai_parse.guess_header_row(path), self.HEADER)
+
+    def test_parse_with_mapping_matches_strict_parser_on_equivalent_data(self):
+        mapping = self._valid_mapping()
+        with tempfile.TemporaryDirectory() as d:
+            weird_path = os.path.join(d, "weird.csv")
+            with open(weird_path, "w", encoding="utf-8") as fh:
+                fh.write('"Export as of 09/24/2026"\n\nMy Brokerage Account\n')
+                fh.write("Ticker,Name,Shares,Basis,Value,Type\n")
+                fh.write("XYZ,Xyz Corp,10,1000,1200,Equity\n")
+                fh.write("Cash,--,--,--,300,Cash\n")
+                fh.write("Account Total,,,1000,1500,\n")
+            meta, positions, totals = ai_parse.parse_with_mapping(weird_path, mapping, self.HEADER)
+
+        self.assertEqual(meta["snapshot_date"], "2026-09-24")
+        self.assertEqual(len(positions), 1)
+        p = positions[0]
+        self.assertEqual(p["symbol"], "XYZ")
+        self.assertEqual(p["quantity"], 10.0)
+        self.assertEqual(p["cost_basis"], 1000.0)
+        self.assertEqual(p["market_value"], 1200.0)
+        self.assertEqual(totals["My Brokerage Account"]["cash_value"], 300.0)
+
+
+class ParseCsvSmartTests(unittest.TestCase):
+    def test_strict_success_never_touches_the_ai_fallback(self):
+        with unittest.mock.patch("ai_parse.map_columns") as mock_map:
+            meta, rows, totals = portfolio.parse_csv_smart(FIXTURE, api_key="unused-key")
+        mock_map.assert_not_called()
+        self.assertEqual(meta["snapshot_date"], "2026-01-15")
+
+    def test_no_api_key_reraises_the_strict_error_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad_path = os.path.join(d, "bad.csv")
+            with open(bad_path, "w", encoding="utf-8") as fh:
+                fh.write("not,a,real,export\n")
+            with self.assertRaises(SystemExit):
+                portfolio.parse_csv_smart(bad_path, api_key=None)
+
+    def test_falls_back_to_ai_only_when_strict_parser_fails(self):
+        header = ["Ticker", "Name", "Shares", "Basis", "Value", "Type"]
+        mapping = {f: None for f in ai_parse.ALL_FIELDS}
+        mapping.update({"symbol": 0, "quantity": 2, "cost_basis": 3, "market_value": 4})
+        with tempfile.TemporaryDirectory() as d:
+            weird_path = os.path.join(d, "weird.csv")
+            with open(weird_path, "w", encoding="utf-8") as fh:
+                fh.write('"Export as of 09/24/2026"\n\nAcct\n')
+                fh.write("Ticker,Name,Shares,Basis,Value,Type\n")
+                fh.write("XYZ,Xyz Corp,10,1000,1200,Equity\n")
+
+            with unittest.mock.patch("ai_parse.guess_header_row", return_value=header), \
+                 unittest.mock.patch("ai_parse.map_columns", return_value=(mapping, "")) as mock_map:
+                meta, positions, totals = portfolio.parse_csv_smart(weird_path, api_key="fake-key")
+
+        mock_map.assert_called_once()
+        self.assertEqual(positions[0]["symbol"], "XYZ")
 
 
 class BulkCreateTests(TempDBMixin, unittest.TestCase):

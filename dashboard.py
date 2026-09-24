@@ -20,8 +20,8 @@ import perf
 import pgcompat
 import watchlist
 from allocation import CONCENTRATION_PCT, allocate
-from portfolio import DBError, connect, import_csv, parse_csv
-from update_prices import ENV_PATH, latest_snapshot, refresh_prices, resolve_key
+from portfolio import DBError, connect, import_csv, parse_csv_smart
+from update_prices import ENV_PATH, latest_snapshot, load_env, refresh_prices, resolve_key
 from changes import diff_positions, synthesize_transactions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -67,6 +67,18 @@ if not _login():
 
 USER_ID = st.session_state["user_id"]
 PREFS_PATH = os.path.join(HERE, f".dashboard_prefs.{USER_ID}.json")
+
+
+def _anthropic_key() -> str | None:
+    """Same resolution order as resolve_key() uses for FINNHUB_API_KEY -
+    .env locally, then the OS environment (which is how Streamlit
+    Community Cloud exposes its Secrets UI entries). None if unset -
+    every AI-assisted-parsing call site treats that as "skip the AI
+    fallback, strict parsing only," today's exact behavior."""
+    return (load_env(ENV_PATH).get("ANTHROPIC_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY")
+            or "").strip() or None
+
 
 MASK = "•••"
 
@@ -303,11 +315,15 @@ if not positions:
             fh.write(up.getbuffer())
         _conn = connect(DB)
         try:
-            info = import_csv(_conn, src_path, USER_ID)
+            info = import_csv(_conn, src_path, USER_ID, _anthropic_key())
         except DBError as exc:
             st.error(f"Import failed: {exc}")
+        except SystemExit as exc:
+            st.error(f"Couldn't parse this file: {exc}")
         else:
-            st.success(f"Imported snapshot {info['snapshot_date']} — {info['n_positions']} positions.")
+            note = " (Claude helped interpret this file's headers — worth a spot check.)" \
+                if info["ai_assisted"] else ""
+            st.success(f"Imported snapshot {info['snapshot_date']} — {info['n_positions']} positions.{note}")
             st.rerun()
         finally:
             _conn.close()
@@ -523,11 +539,15 @@ with st.expander("Import a new positions CSV", expanded=False):
     if src_path and not os.path.isfile(src_path):
         st.error(f"No file at: {src_path}")
     elif src_path:
+        _parse_info: dict = {}
         try:
-            _meta, new_rows, _ = parse_csv(src_path)
+            _meta, new_rows, _ = parse_csv_smart(src_path, _anthropic_key(), _parse_info)
         except SystemExit as exc:
             st.error(f"Couldn't parse this file: {exc}")
         else:
+            if _parse_info.get("ai_assisted"):
+                st.info("This file's headers didn't match the expected format, so Claude "
+                        "helped interpret it — double check the numbers below before confirming.")
             file_date = _meta["snapshot_date"]
             _conn = connect(DB)
             try:
@@ -595,7 +615,7 @@ with st.expander("Import a new positions CSV", expanded=False):
 
                 if st.button("Confirm import", type="primary", key="csv_confirm"):
                     try:
-                        info = import_csv(_conn, src_path, USER_ID)
+                        info = import_csv(_conn, src_path, USER_ID, _anthropic_key())
                         # Replace-by-date: this date's inferred transactions are
                         # rewritten from the new file's diff.
                         _conn.execute(

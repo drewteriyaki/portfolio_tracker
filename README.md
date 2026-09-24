@@ -145,7 +145,17 @@ database keeps working after an update.
   (e.g. one per person). The dashboard and every CLI command honour it.
 - The Finnhub key can come from `.env`, the `FINNHUB_API_KEY` environment
   variable, or `--key`. Yahoo history (`sync_history.py`) needs no key.
-- `.env`, `portfolio.db`, `imports/`, and `.dashboard_prefs.json` are
+- **AI-assisted import (optional):** if a CSV's headers don't match the
+  expected Schwab shape (a different broker, renamed/reordered columns),
+  and an `ANTHROPIC_API_KEY` is set (same `.env`/environment-variable
+  pattern as `FINNHUB_API_KEY`), the importer asks Claude to map the
+  file's column headers to the fields it needs, then parses the actual
+  data itself using that mapping - see `ai_parse.py`. Only the header
+  row (plain column-name text, e.g. `"Symbol,Description,Qty,..."`) is
+  ever sent; real holdings, dollar amounts, and account numbers are
+  never sent to the API under this design. Unset (the default): strict
+  parsing only, identical to before this existed.
+- `.env`, `portfolio.db`, `imports/`, and `.dashboard_prefs*.json` are
   git-ignored.
 
 ---

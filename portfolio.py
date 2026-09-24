@@ -231,6 +231,48 @@ def parse_csv(path: str):
     return meta, positions, account_totals
 
 
+def parse_csv_smart(path: str, api_key: str | None = None, info: dict | None = None):
+    """Like parse_csv(), but on failure - and only if `api_key` is given -
+    retries via ai_parse's AI-assisted column-mapping fallback (see
+    ai_parse.py's module docstring for why that's scoped to just the
+    header row, not full-row AI parsing - cost and privacy, not just
+    simplicity). Any failure in the fallback re-raises the ORIGINAL
+    strict-parser error rather than a confusing error about the fallback
+    itself, so a genuinely unparseable file still gets today's message.
+    `ai_parse` is imported lazily so local/no-key use never even imports
+    its urllib-based client.
+
+    Returns the exact same (meta, positions, account_totals) shape
+    parse_csv() does either way, so a caller that doesn't care which path
+    ran needs no changes. A caller that DOES want to know (e.g. to show
+    "Claude helped interpret this file" in the UI) passes a dict via
+    `info` - it gets `info["ai_assisted"] = True/False` set as a side
+    effect, chosen over widening the return tuple so this stays a drop-in
+    replacement for parse_csv() everywhere else."""
+    try:
+        result = parse_csv(path)
+        if info is not None:
+            info["ai_assisted"] = False
+        return result
+    except SystemExit as strict_error:
+        if not api_key:
+            raise
+        import ai_parse
+        header_row = ai_parse.guess_header_row(path)
+        if header_row is None:
+            raise
+        mapping, error = ai_parse.map_columns(header_row, api_key)
+        if mapping is None:
+            raise
+        try:
+            result = ai_parse.parse_with_mapping(path, mapping, header_row)
+        except SystemExit:
+            raise strict_error from None
+        if info is not None:
+            info["ai_assisted"] = True
+        return result
+
+
 # --------------------------------------------------------------------------- #
 # database helpers
 # --------------------------------------------------------------------------- #
@@ -342,7 +384,8 @@ POSITION_COLS = [
 ]
 
 
-def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int) -> dict:
+def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int,
+                api_key: str | None = None) -> dict:
     """Parse a Schwab Positions export and write it into an open connection,
     scoped to `user_id`.
 
@@ -354,12 +397,18 @@ def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int) -> dict:
     filename still works, and two different users importing a CSV for the same
     calendar date never touch each other's rows. Returns a summary dict; it does
     not print or verify.
+
+    `api_key` (an Anthropic key) is optional and enables parse_csv_smart()'s
+    AI-assisted fallback for a file whose headers don't match the strict
+    Schwab shape - see ai_parse.py. None (the default) means exactly
+    today's behavior: strict parsing only.
     """
     src = os.path.abspath(csv_path)
     if not os.path.isfile(src):
         raise FileNotFoundError(src)
 
-    meta, rows, totals = parse_csv(src)
+    parse_info: dict = {}
+    meta, rows, totals = parse_csv_smart(src, api_key, parse_info)
     snapshot_date = meta["snapshot_date"]
 
     with conn:
@@ -410,6 +459,7 @@ def import_csv(conn: sqlite3.Connection, csv_path: str, user_id: int) -> dict:
         "n_positions": len(rows),
         "accounts": accounts,
         "per_account": {a: sum(1 for r in rows if r["account"] == a) for a in accounts},
+        "ai_assisted": parse_info.get("ai_assisted", False),
     }
 
 
@@ -420,8 +470,12 @@ def cmd_import(args: argparse.Namespace) -> int:
     if user_id is None:
         raise SystemExit(f"No such user '{args.user}' - create one first: "
                           f"python manage_users.py create {args.user}")
+    # Same optional AI-assisted-parsing fallback the dashboard offers (see
+    # ai_parse.py) - unset (the common case for local CLI use) means
+    # exactly today's strict-parser-only behavior.
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     try:
-        info = import_csv(conn, args.csv, user_id)
+        info = import_csv(conn, args.csv, user_id, api_key)
     except FileNotFoundError as exc:
         raise SystemExit(f"File not found: {exc}")
 
