@@ -113,6 +113,140 @@ def _anthropic_key() -> str | None:
             or "").strip() or None
 
 
+CHAT_MESSAGE_LIMIT = 40  # per session - a simple guard on API spend
+QUICK_STARTS = {
+    "Help me get started": "I'm new to investing. Help me figure out how to get started.",
+    "Review my portfolio": "Review my current portfolio against my goals and suggest improvements.",
+    "Check for overlap and concentration": "Check my holdings for overlap between funds and "
+                                           "for anything I'm too concentrated in.",
+}
+
+
+def _render_assistant(contexts, cash_by_account):
+    import advisor
+
+    st.subheader("AI Assistant")
+    if st.session_state.pop("profile_toast", False):
+        st.toast("Profile updated from the conversation.")
+    api_key = _anthropic_key()
+    if not api_key:
+        st.info("The assistant needs an `ANTHROPIC_API_KEY` - add it to `.env` locally, or to "
+                "Settings → Secrets on Streamlit Cloud.")
+        return
+
+    conn = connect(DB)
+    try:
+        profile = advisor.get_profile(conn, USER_ID)
+    finally:
+        conn.close()
+
+    with st.expander("Your investing profile", expanded=False):
+        with st.form("investor_profile_form"):
+            goal = st.text_input("Long-term goal", value=profile["goal"] or "",
+                                 placeholder="e.g. retire at 60, buy a house in 5 years")
+            c1, c2 = st.columns(2)
+            horizon = c1.number_input("Time horizon (years, 0 = not set)", min_value=0,
+                                      max_value=80, value=int(profile["time_horizon_years"] or 0))
+            target = c2.number_input("Target annual return % (0 = not set)", min_value=0.0,
+                                     max_value=50.0, step=0.5,
+                                     value=float(profile["target_return_pct"] or 0.0))
+            risk_opts = ["Not set", *advisor.RISK_LEVELS]
+            exp_opts = ["Not set", *advisor.EXPERIENCE_LEVELS]
+            risk = c1.selectbox("Risk tolerance", risk_opts,
+                                index=risk_opts.index(profile["risk_tolerance"] or "Not set"))
+            exp = c2.selectbox("Investing experience", exp_opts,
+                               index=exp_opts.index(profile["experience"] or "Not set"))
+            notes = st.text_area("Other notes", value=profile["notes"] or "",
+                                 placeholder="Income stability, upcoming expenses, preferences...")
+            if st.form_submit_button("Save profile"):
+                conn = connect(DB)
+                try:
+                    advisor.save_profile(conn, USER_ID, {
+                        "goal": goal.strip() or None,
+                        "time_horizon_years": horizon or None,
+                        "target_return_pct": target or None,
+                        "risk_tolerance": None if risk == "Not set" else risk,
+                        "experience": None if exp == "Not set" else exp,
+                        "notes": notes.strip() or None,
+                    }, replace=True)
+                finally:
+                    conn.close()
+                st.rerun()
+        st.caption("The assistant also fills this in from what you tell it in the chat.")
+
+    st.caption("Educational information only - not financial advice. The assistant is not a "
+               "licensed financial advisor; do your own research before making any investment "
+               "decision.")
+
+    display = st.session_state.setdefault("chat_display", [])
+    history = st.session_state.setdefault("chat_api", [])
+    for msg in display:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["text"])
+
+    prompt = None
+    if not display:
+        cols = st.columns(len(QUICK_STARTS))
+        for col, (label, text) in zip(cols, QUICK_STARTS.items()):
+            if col.button(label, use_container_width=True, key=f"quick_{label}"):
+                prompt = text
+
+    n_sent = sum(1 for m in display if m["role"] == "user")
+    at_limit = n_sent >= CHAT_MESSAGE_LIMIT
+    typed = st.chat_input("Ask about investing or your portfolio...", disabled=at_limit)
+    prompt = typed or prompt
+
+    if prompt and not at_limit:
+        import anthropic
+
+        display.append({"role": "user", "text": prompt})
+        history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        system = advisor.system_prompt(profile, advisor.portfolio_summary(contexts, cash_by_account))
+        updated = []
+
+        def on_update(fields):
+            c = connect(DB)
+            try:
+                advisor.save_profile(c, USER_ID, fields)
+            finally:
+                c.close()
+            updated.append(fields)
+
+        with st.chat_message("assistant"):
+            try:
+                reply = st.write_stream(advisor.stream_reply(
+                    anthropic.Anthropic(api_key=api_key), history, system, on_update))
+            except anthropic.AuthenticationError:
+                reply = "The ANTHROPIC_API_KEY was rejected - check that it's correct."
+                st.error(reply)
+            except anthropic.RateLimitError:
+                reply = "The assistant is rate-limited right now - wait a minute and try again."
+                st.error(reply)
+            except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
+                reply = f"Couldn't reach the assistant: {exc}"
+                st.error(reply)
+        display.append({"role": "assistant", "text": reply if isinstance(reply, str) else "".join(reply)})
+        if updated:
+            # rerun so the profile form shows the new values; the toast is
+            # carried across the rerun, since one fired right before it is lost
+            st.session_state["profile_toast"] = True
+            st.rerun()
+
+    if at_limit:
+        st.info(f"This conversation hit the {CHAT_MESSAGE_LIMIT}-message limit. Start a new one "
+                "to keep going.")
+    if display:
+        def _new_conversation():
+            st.session_state["chat_display"] = []
+            st.session_state["chat_api"] = []
+        st.button("New conversation", on_click=_new_conversation)
+    st.caption("Your holdings are shared with the assistant as percentages only - no dollar "
+               "amounts, share counts, or account names.")
+
+
 MASK = "•••"
 
 
@@ -328,6 +462,11 @@ if _flash:
     st.success(_flash)
 
 snapshot, positions, cash_by_account, quotes = load()
+if not positions and PAGE == "AI Assistant":
+    # Helping brand-new investors plan a first portfolio is a core use of the
+    # assistant, so it works before any CSV has been imported.
+    _render_assistant([], {})
+    st.stop()
 if not positions:
     # Blank-account onboarding: a brand-new admin-provisioned account has no
     # data at all yet. Skip straight to a CSV upload prompt instead of the
@@ -339,6 +478,8 @@ if not positions:
     st.title("Portfolio Tracker")
     st.info(f"Welcome, **{st.session_state['username']}** — your account has no data yet. "
             "Upload a Schwab Positions export CSV to get started.")
+    st.caption("New to investing? Open **AI Assistant** in the sidebar for help planning a "
+               "first portfolio.")
     up = st.file_uploader("Positions export (.csv)", type=["csv"], key="onboard_csv_upload")
     if up is not None:
         imports_dir = os.path.join(HERE, "imports", str(USER_ID))
@@ -1370,13 +1511,4 @@ if PAGE == "Income":
 
 
 if PAGE == "AI Assistant":
-    # Placeholder only - the actual chatbot (prompting, what portfolio data it
-    # gets to see, cost limits) is still to be designed with the user.
-    st.subheader("AI Assistant")
-    st.info("Coming soon: ask stock questions, get help building a diversified starter "
-            "portfolio, and have your current holdings reviewed for concentration, overlap, "
-            "and weak positions.")
-    st.caption("Educational information only - not financial advice. The assistant is not a "
-               "licensed financial advisor; do your own research before making any investment "
-               "decision.")
-    st.chat_input("Ask about stocks or your portfolio... (not available yet)", disabled=True)
+    _render_assistant(contexts, cash_by_account)

@@ -31,3 +31,8 @@ psycopg[binary]==3.2.3
 # which is where the deployed app's per-click lag came from. Not needed by
 # the CLI scripts (they connect once per invocation, not per click).
 psycopg-pool==3.2.4
+
+# AI Assistant chatbot (advisor.py) - the official Anthropic SDK, for
+# streaming replies and tool use. Uses ANTHROPIC_API_KEY, same as the
+# AI-assisted CSV import.
+anthropic==1.8.0

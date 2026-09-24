@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+import advisor  # noqa: E402
 import ai_parse  # noqa: E402
 import alerts  # noqa: E402
 import allocation  # noqa: E402
@@ -691,6 +692,132 @@ class ParseCsvSmartTests(unittest.TestCase):
 
         mock_map.assert_called_once()
         self.assertEqual(positions[0]["symbol"], "XYZ")
+
+
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeStream:
+    def __init__(self, texts, message):
+        self._texts, self._message = texts, message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(_Obj(type="text", text=t) for t in self._texts)
+
+    def get_final_message(self):
+        return self._message
+
+
+class _FakeClient:
+    """Stands in for anthropic.Anthropic: each messages.stream() call plays
+    the next scripted turn and records what it was sent."""
+
+    def __init__(self, turns):
+        self._turns = list(turns)
+        self.calls = []
+        self.messages = self
+
+    def stream(self, **kwargs):
+        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
+        return self._turns.pop(0)
+
+
+class AdvisorTests(TempDBMixin, unittest.TestCase):
+    def _contexts(self):
+        conn = portfolio.connect(self.db)
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
+        positions = [dict(r) for r in conn.execute(
+            "SELECT * FROM positions WHERE user_id = ?", (self.user_id,))]
+        cash = {r["account"]: r["cash_value"] for r in conn.execute(
+            "SELECT account, cash_value FROM account_totals WHERE user_id = ?", (self.user_id,))}
+        conn.close()
+        total = sum(p["market_value"] for p in positions) + sum(cash.values())
+        ctxs = [{"pos": p, "quote": {}, "stats": {}, "info": {}, "port_value": total,
+                 "acct_value": None} for p in positions]
+        return ctxs, cash
+
+    def test_portfolio_summary_sends_weights_not_dollars_or_account_names(self):
+        ctxs, cash = self._contexts()
+        text = advisor.portfolio_summary(ctxs, cash)
+        for sym in ("AAA", "BBB", "CCC"):
+            self.assertIn(sym, text)
+        self.assertNotIn("$", text)
+        self.assertNotIn("Individual", text)
+        self.assertNotIn("...111", text)
+        for dollars in ("1200", "1,200", "1600", "1,600"):   # fixture market values
+            self.assertNotIn(dollars, text)
+        self.assertIn("% of portfolio", text)
+
+    def test_portfolio_summary_empty_account(self):
+        self.assertIn("No holdings yet", advisor.portfolio_summary([], {}))
+
+    def test_profile_round_trip_and_isolation(self):
+        conn = portfolio.connect(self.db)
+        other = auth.create_user(conn, "other", "pw")
+        advisor.save_profile(conn, self.user_id, {"goal": "retire at 60", "risk_tolerance": "moderate"})
+        advisor.save_profile(conn, self.user_id, {"time_horizon_years": 25, "goal": None})
+        p = advisor.get_profile(conn, self.user_id)
+        self.assertEqual(p["goal"], "retire at 60")        # None left it unchanged
+        self.assertEqual(p["time_horizon_years"], 25)
+        self.assertIsNone(advisor.get_profile(conn, other)["goal"])
+        advisor.save_profile(conn, self.user_id, {"goal": None}, replace=True)
+        self.assertIsNone(advisor.get_profile(conn, self.user_id)["risk_tolerance"])
+        conn.close()
+
+    def test_validate_profile_input(self):
+        ok, err = advisor.validate_profile_input(
+            {"goal": " retire ", "time_horizon_years": 20, "target_return_pct": 7,
+             "risk_tolerance": "aggressive", "experience": None, "notes": None})
+        self.assertEqual(err, "")
+        self.assertEqual(ok, {"goal": "retire", "time_horizon_years": 20,
+                              "target_return_pct": 7.0, "risk_tolerance": "aggressive"})
+        for bad in ({"risk_tolerance": "yolo"}, {"time_horizon_years": 0},
+                    {"target_return_pct": 900}, {"surprise": "x"}, "not a dict"):
+            fields, err = advisor.validate_profile_input(bad)
+            self.assertIsNone(fields, bad)
+            self.assertTrue(err)
+
+    def test_system_prompt_asks_for_missing_profile_fields(self):
+        empty = {f: None for f in advisor.PROFILE_FIELDS}
+        self.assertIn("Still unknown", advisor.system_prompt(empty, "No holdings yet"))
+        full = {"goal": "retire", "time_horizon_years": 30, "target_return_pct": 7.0,
+                "risk_tolerance": "moderate", "experience": "new", "notes": None}
+        prompt = advisor.system_prompt(full, "No holdings yet")
+        self.assertNotIn("Still unknown", prompt)
+        self.assertIn("retire", prompt)
+
+    def test_stream_reply_saves_profile_then_continues(self):
+        tool_block = _Obj(type="tool_use", id="tu_1", name="update_investor_profile",
+                          input={"goal": "retire at 60", "time_horizon_years": None,
+                                 "target_return_pct": None, "risk_tolerance": "moderate",
+                                 "experience": None, "notes": None})
+        client = _FakeClient([
+            _FakeStream(["Got it. "], _Obj(stop_reason="tool_use", content=[tool_block])),
+            _FakeStream(["How long until you retire?"],
+                        _Obj(stop_reason="end_turn", content=[_Obj(type="text", text="...")])),
+        ])
+        saved = []
+        history = [{"role": "user", "content": "I want to retire at 60, moderate risk."}]
+        text = "".join(advisor.stream_reply(client, history, "sys", saved.append))
+        self.assertEqual(text, "Got it. How long until you retire?")
+        self.assertEqual(saved, [{"goal": "retire at 60", "risk_tolerance": "moderate"}])
+        self.assertEqual(len(client.calls), 2)
+        # second call carries the assistant tool_use turn and its tool_result
+        self.assertEqual(client.calls[1]["messages"][-1]["content"][0]["tool_use_id"], "tu_1")
+
+    def test_stream_reply_refusal(self):
+        client = _FakeClient([_FakeStream([], _Obj(stop_reason="refusal", content=[]))])
+        text = "".join(advisor.stream_reply(client, [{"role": "user", "content": "x"}],
+                                            "sys", lambda f: None))
+        self.assertEqual(text, advisor.REFUSAL_TEXT)
 
 
 class BulkCreateTests(TempDBMixin, unittest.TestCase):

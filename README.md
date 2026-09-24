@@ -155,6 +155,14 @@ database keeps working after an update.
   ever sent; real holdings, dollar amounts, and account numbers are
   never sent to the API under this design. Unset (the default): strict
   parsing only, identical to before this existed.
+- **AI Assistant (sidebar):** an educational investing chatbot on Claude
+  Sonnet 5, using the same `ANTHROPIC_API_KEY` - see `advisor.py`. It asks
+  about goals, time horizon, target return, and risk tolerance first,
+  saves the answers to a per-account profile (`investor_profiles` table,
+  also editable in a form), then reviews the account's holdings. Holdings
+  are sent as percentages only (ticker, name, asset type, sector, weight,
+  gain/loss %, dividend yield, beta, P/E) - never dollar amounts, share
+  counts, or account names. Chat history lasts for the session only.
 - `.env`, `portfolio.db`, `imports/`, and `.dashboard_prefs*.json` are
   git-ignored.
 

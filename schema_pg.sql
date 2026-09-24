@@ -178,6 +178,17 @@ CREATE TABLE IF NOT EXISTS security_info (
     fetched_at     TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
 
+CREATE TABLE IF NOT EXISTS investor_profiles (
+    user_id            INTEGER PRIMARY KEY,
+    goal               TEXT,
+    time_horizon_years INTEGER,
+    target_return_pct  REAL,
+    risk_tolerance     TEXT,
+    experience         TEXT,
+    notes              TEXT,
+    updated_at         TEXT
+);
+
 CREATE TABLE IF NOT EXISTS watchlist (
     user_id    INTEGER NOT NULL,
     ticker     TEXT    NOT NULL,

@@ -198,6 +198,19 @@ CREATE TABLE IF NOT EXISTS security_info (
     fetched_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- AI Assistant investing profile, one row per account (see advisor.py).
+-- updated_at is always written explicitly, never left to a DEFAULT.
+CREATE TABLE IF NOT EXISTS investor_profiles (
+    user_id            INTEGER PRIMARY KEY,
+    goal               TEXT,
+    time_horizon_years INTEGER,
+    target_return_pct  REAL,
+    risk_tolerance     TEXT,                      -- conservative | moderate | aggressive
+    experience         TEXT,                      -- new | some | experienced
+    notes              TEXT,
+    updated_at         TEXT
+);
+
 -- Tickers tracked for their chart/stats without being an owned position.
 -- Per-user: two different accounts can each watch the same ticker.
 CREATE TABLE IF NOT EXISTS watchlist (

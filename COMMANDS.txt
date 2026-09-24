@@ -158,7 +158,12 @@ Streamlit Cloud:        app → Settings → Secrets
 GitHub Actions:         repo → Settings → Secrets and variables → Actions
 
   FINNHUB_API_KEY     — live price quotes (required for Refresh button)
-  ANTHROPIC_API_KEY   — optional, AI-assisted CSV import fallback only
+  ANTHROPIC_API_KEY   — powers the AI Assistant chatbot and the
+                         AI-assisted CSV import fallback. Without it,
+                         the AI Assistant section just says it's off.
+                         Chat messages bill to this key (Claude Sonnet 5,
+                         roughly 1-2 cents per message; capped at 40
+                         messages per conversation).
   DATABASE_URL        — Neon connection string (Streamlit Cloud + Actions)
   REFRESH_USERNAME    — which account the scheduled price-refresh job
                          updates (GitHub Actions only)
