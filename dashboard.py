@@ -79,15 +79,83 @@ def _logout():
 if not _login():
     st.stop()
 
-USER_ID = st.session_state["user_id"]
+# Advisor mode: user_id is who logged in; active_user_id is whose data is
+# showing. Every query below goes through USER_ID, so it's resolved here,
+# re-checked against the database on every run - never trusted from
+# session state alone.
+LOGIN_ID = st.session_state["user_id"]
+_conn = connect(DB)
+try:
+    IS_ADVISOR = auth.is_advisor(_conn, LOGIN_ID)
+    CLIENTS = auth.list_clients(_conn, LOGIN_ID) if IS_ADVISOR else []
+    _active = st.session_state.get("active_user_id", LOGIN_ID)
+    if not auth.can_view(_conn, LOGIN_ID, _active):
+        _active = LOGIN_ID
+finally:
+    _conn.close()
+USER_ID = _active
+st.session_state["active_user_id"] = USER_ID
+ACTIVE_NAME = (st.session_state["username"] if USER_ID == LOGIN_ID
+               else dict(CLIENTS).get(USER_ID, "client"))
 PREFS_PATH = os.path.join(HERE, f".dashboard_prefs.{USER_ID}.json")
 
 PAGES = ["Dashboard", "Watchlist", "Activity", "Income", "AI Assistant"]
 st.session_state.setdefault("page", PAGES[0])
 
+# kept when an advisor switches accounts; everything else is per-account
+_KEEP_ON_SWITCH = ("user_id", "username", "page")
+
 
 def _go(page):
     st.session_state["page"] = page
+
+
+def _switch_to(account_id):
+    for k in list(st.session_state.keys()):
+        if k not in _KEEP_ON_SWITCH:
+            del st.session_state[k]
+    st.session_state["active_user_id"] = account_id
+    st.session_state["viewing_select"] = account_id
+
+
+def _on_viewing_change():
+    _switch_to(st.session_state["viewing_select"])
+
+
+def _add_client():
+    name = (st.session_state.get("new_client_name") or "").strip()
+    pw = st.session_state.get("new_client_pw") or None
+    c = connect(DB)
+    try:
+        client_id = auth.create_client(c, st.session_state["user_id"], name, pw)
+    except ValueError as exc:
+        st.session_state["client_msg"] = ("error", str(exc))
+        return
+    except DBError:
+        st.session_state["client_msg"] = ("error", f"The username '{name}' is already taken.")
+        return
+    finally:
+        c.close()
+    _switch_to(client_id)
+    st.session_state["client_msg"] = ("success", f"Added client '{name}' - you're now viewing them.")
+
+
+def _set_client_password():
+    pw = st.session_state.get("client_login_pw") or ""
+    if len(pw) < 8:
+        st.session_state["client_msg"] = ("error", "Use a password of at least 8 characters.")
+        return
+    viewer, target = st.session_state["user_id"], st.session_state["active_user_id"]
+    c = connect(DB)
+    try:
+        if viewer == target or not auth.can_view(c, viewer, target):
+            st.session_state["client_msg"] = ("error", "You can only set passwords for your clients.")
+            return
+        auth.set_password(c, auth.get_username(c, target), pw)
+    finally:
+        c.close()
+    st.session_state["client_login_pw"] = ""
+    st.session_state["client_msg"] = ("success", "Login password set - the client can log in now.")
 
 
 with st.sidebar:
@@ -96,7 +164,32 @@ with st.sidebar:
         st.button(_p, key=f"nav_{_p}", on_click=_go, args=(_p,), use_container_width=True,
                   type="primary" if st.session_state["page"] == _p else "tertiary")
     st.divider()
-    st.caption(f"Logged in as **{st.session_state['username']}**")
+
+    if IS_ADVISOR:
+        _accounts = {LOGIN_ID: f"My portfolio ({st.session_state['username']})", **dict(CLIENTS)}
+        st.session_state["viewing_select"] = USER_ID
+        st.selectbox("Viewing", list(_accounts), format_func=_accounts.get,
+                     key="viewing_select", on_change=_on_viewing_change)
+        _msg = st.session_state.pop("client_msg", None)
+        if _msg:
+            getattr(st, _msg[0])(_msg[1])
+        with st.expander("Add client"):
+            st.text_input("Username", key="new_client_name")
+            st.text_input("Login password (optional)", type="password", key="new_client_pw",
+                          help="Leave blank for a client you manage without them logging in. "
+                               "You can give them a login later.")
+            st.button("Add client", on_click=_add_client, use_container_width=True)
+        if USER_ID != LOGIN_ID:
+            with st.expander("Client login"):
+                st.caption(f"Set a password so **{ACTIVE_NAME}** can log in and see their own "
+                           "portfolio.")
+                st.text_input("New password", type="password", key="client_login_pw")
+                st.button("Set login password", on_click=_set_client_password,
+                          use_container_width=True)
+        st.divider()
+
+    _viewing = f" · viewing **{ACTIVE_NAME}**" if USER_ID != LOGIN_ID else ""
+    st.caption(f"Logged in as **{st.session_state['username']}**{_viewing}")
     st.button("Log out", on_click=_logout, use_container_width=True)
 
 PAGE = st.session_state["page"]
@@ -476,7 +569,7 @@ if not positions:
     # down, just without that flow's diff-preview step (there's nothing to
     # diff a first import against).
     st.title("Portfolio Tracker")
-    st.info(f"Welcome, **{st.session_state['username']}** — your account has no data yet. "
+    st.info(f"Welcome, **{ACTIVE_NAME}** — this account has no data yet. "
             "Upload a Schwab Positions export CSV to get started.")
     st.caption("New to investing? Open **AI Assistant** in the sidebar for help planning a "
                "first portfolio.")

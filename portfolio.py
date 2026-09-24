@@ -321,7 +321,8 @@ def _ensure_schema(conn) -> None:
                         ("positions", USER_ID_COL),
                         ("account_totals", USER_ID_COL),
                         ("transactions", USER_ID_COL),
-                        ("value_log", USER_ID_COL)):
+                        ("value_log", USER_ID_COL),
+                        ("users", [("is_advisor", "INTEGER")])):
         if is_pg:
             have = {r["column_name"] for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = %s",

@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Advisor mode: which accounts each advisor manages. Who is an advisor is
+-- users.is_advisor (added by portfolio.py's _ensure_schema), set only via
+-- manage_users.py.
+CREATE TABLE IF NOT EXISTS advisor_clients (
+    advisor_id INTEGER NOT NULL,
+    client_id  INTEGER NOT NULL,
+    PRIMARY KEY (advisor_id, client_id)
+);
+
 -- One row per (positions export file, as-of date) that has been imported.
 CREATE TABLE IF NOT EXISTS snapshots (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

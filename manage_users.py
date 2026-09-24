@@ -6,6 +6,9 @@ created (there is no signup anywhere in the web app itself).
   python manage_users.py passwd <username> [--db portfolio.db]
   python manage_users.py list   [--db portfolio.db]
   python manage_users.py bulk-create <file.txt> [--db portfolio.db]
+  python manage_users.py make-advisor | remove-advisor <username>
+  python manage_users.py link | unlink <advisor> <client>
+  python manage_users.py clients <advisor>
 
 Password is always prompted interactively via getpass for `create`/`passwd`
 (never a CLI arg, so it never ends up in shell history or process
@@ -115,12 +118,67 @@ def cmd_bulk_create(args) -> int:
 
 def cmd_list(args) -> int:
     conn = connect(args.db)
-    rows = conn.execute("SELECT id, username, created_at FROM users ORDER BY id").fetchall()
+    rows = conn.execute("SELECT id, username, created_at, is_advisor FROM users ORDER BY id").fetchall()
     if not rows:
         print("No users yet - use `create` to add one.")
         return 0
     for r in rows:
-        print(f"  {r['id']:>3}  {r['username']:<20} created {r['created_at']}")
+        role = "advisor" if r["is_advisor"] else ""
+        print(f"  {r['id']:>3}  {r['username']:<20} {role:<8} created {r['created_at']}")
+    return 0
+
+
+def cmd_set_advisor(args, flag: bool) -> int:
+    conn = connect(args.db)
+    if not auth.set_advisor(conn, args.username, flag):
+        print(f"No such user: '{args.username}'.")
+        return 1
+    print(f"'{args.username}' is {'now' if flag else 'no longer'} an advisor.")
+    return 0
+
+
+def _two_ids(conn, advisor, client):
+    a, c = auth.get_user_id(conn, advisor), auth.get_user_id(conn, client)
+    for name, uid in ((advisor, a), (client, c)):
+        if uid is None:
+            print(f"No such user: '{name}'.")
+    return a, c
+
+
+def cmd_link(args) -> int:
+    conn = connect(args.db)
+    a, c = _two_ids(conn, args.advisor, args.client)
+    if a is None or c is None:
+        return 1
+    if not auth.is_advisor(conn, a):
+        print(f"'{args.advisor}' isn't an advisor - run make-advisor first.")
+        return 1
+    auth.link_client(conn, a, c)
+    print(f"'{args.client}' is now a client of '{args.advisor}'.")
+    return 0
+
+
+def cmd_unlink(args) -> int:
+    conn = connect(args.db)
+    a, c = _two_ids(conn, args.advisor, args.client)
+    if a is None or c is None:
+        return 1
+    auth.unlink_client(conn, a, c)
+    print(f"'{args.client}' is no longer a client of '{args.advisor}'.")
+    return 0
+
+
+def cmd_clients(args) -> int:
+    conn = connect(args.db)
+    a = auth.get_user_id(conn, args.advisor)
+    if a is None:
+        print(f"No such user: '{args.advisor}'.")
+        return 1
+    clients = auth.list_clients(conn, a)
+    if not clients:
+        print(f"'{args.advisor}' has no clients.")
+    for cid, name in clients:
+        print(f"  {cid:>3}  {name}")
     return 0
 
 
@@ -140,6 +198,16 @@ def main(argv=None) -> int:
 
     sub.add_parser("list", help="list existing accounts")
 
+    for name, help_text in (("make-advisor", "let an account manage client accounts"),
+                            ("remove-advisor", "take advisor rights away from an account")):
+        sub.add_parser(name, help=help_text).add_argument("username")
+    for name, help_text in (("link", "make <client> a client of <advisor>"),
+                            ("unlink", "remove <client> from <advisor>'s clients")):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("advisor")
+        p.add_argument("client")
+    sub.add_parser("clients", help="list an advisor's clients").add_argument("advisor")
+
     args = ap.parse_args(argv)
     if args.cmd == "create":
         return cmd_create(args)
@@ -147,6 +215,14 @@ def main(argv=None) -> int:
         return cmd_passwd(args)
     if args.cmd == "bulk-create":
         return cmd_bulk_create(args)
+    if args.cmd in ("make-advisor", "remove-advisor"):
+        return cmd_set_advisor(args, args.cmd == "make-advisor")
+    if args.cmd == "link":
+        return cmd_link(args)
+    if args.cmd == "unlink":
+        return cmd_unlink(args)
+    if args.cmd == "clients":
+        return cmd_clients(args)
     return cmd_list(args)
 
 

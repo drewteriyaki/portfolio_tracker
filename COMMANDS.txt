@@ -75,6 +75,30 @@ bug:
   python manage_users.py --db $env:NEON_DSN create <username>
 
 
+ADVISOR MODE  (manage_users.py)
+----------------------------------
+An advisor can switch between their own portfolio and their clients' from
+the "Viewing" dropdown in the sidebar, and add new clients there too. Only
+you (the admin) decide who is an advisor, with these commands. Add
+--db $env:NEON_DSN to do it on the live site.
+
+Make someone an advisor / take it away:
+  python manage_users.py make-advisor <username>
+  python manage_users.py remove-advisor <username>
+
+Link an existing account to an advisor as their client / unlink:
+  python manage_users.py link <advisor> <client>
+  python manage_users.py unlink <advisor> <client>
+
+See an advisor's clients:
+  python manage_users.py clients <advisor>
+
+Clients an advisor adds in the app without a password can't log in —
+only the advisor reaches them. To give one a login, the advisor opens
+"Client login" in the sidebar while viewing them, or you run:
+  python manage_users.py passwd <client>
+
+
 IMPORTING A CSV  (portfolio.py)
 ----------------------------------
 Import a Positions export for a specific account (--user is required):
@@ -119,7 +143,7 @@ RUNNING THE TEST SUITE
 ------------------------
   python -m unittest discover -s tests
 
-(72 tests as of this writing. Always run this before pushing changes.)
+(84 tests as of this writing. Always run this before pushing changes.)
 
 
 GIT / DEPLOYING CHANGES

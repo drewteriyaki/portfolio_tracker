@@ -163,6 +163,13 @@ database keeps working after an update.
   are sent as percentages only (ticker, name, asset type, sector, weight,
   gain/loss %, dividend yield, beta, P/E) - never dollar amounts, share
   counts, or account names. Chat history lasts for the session only.
+- **Advisor mode:** an account marked as an advisor (`manage_users.py
+  make-advisor`) gets a "Viewing" dropdown in the sidebar to switch
+  between its own portfolio and its clients' (`advisor_clients` table),
+  with full access to each, plus an "Add client" form. Whose data is
+  shown is re-checked against the database on every page load
+  (`auth.can_view`), not trusted from the session. Clients can be
+  advisor-managed only (random password) or given a login.
 - `.env`, `portfolio.db`, `imports/`, and `.dashboard_prefs*.json` are
   git-ignored.
 

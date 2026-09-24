@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
 
+CREATE TABLE IF NOT EXISTS advisor_clients (
+    advisor_id INTEGER NOT NULL,
+    client_id  INTEGER NOT NULL,
+    PRIMARY KEY (advisor_id, client_id)
+);
+
 CREATE TABLE IF NOT EXISTS snapshots (
     id            SERIAL  PRIMARY KEY,
     snapshot_date TEXT    NOT NULL,

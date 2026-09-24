@@ -820,6 +820,61 @@ class AdvisorTests(TempDBMixin, unittest.TestCase):
         self.assertEqual(text, advisor.REFUSAL_TEXT)
 
 
+class AdvisorModeTests(TempDBMixin, unittest.TestCase):
+    """self.user_id ("testuser") is the advisor in these tests."""
+
+    def setUp(self):
+        super().setUp()
+        self.conn = portfolio.connect(self.db)
+        auth.set_advisor(self.conn, "testuser", True)
+
+    def tearDown(self):
+        self.conn.close()
+        super().tearDown()
+
+    def test_existing_accounts_are_not_advisors(self):
+        other = auth.create_user(self.conn, "plain", "pw")
+        self.conn.execute("UPDATE users SET is_advisor = NULL WHERE id = ?", (other,))
+        self.assertFalse(auth.is_advisor(self.conn, other))
+        self.assertTrue(auth.is_advisor(self.conn, self.user_id))
+
+    def test_client_without_password_cannot_log_in_until_given_one(self):
+        cid = auth.create_client(self.conn, self.user_id, "jsmith")
+        self.assertEqual(auth.list_clients(self.conn, self.user_id), [(cid, "jsmith")])
+        self.assertIsNone(auth.verify_login(self.conn, "jsmith", ""))
+        auth.set_password(self.conn, "jsmith", "clientpass1")
+        self.assertEqual(auth.verify_login(self.conn, "jsmith", "clientpass1"), cid)
+
+    def test_can_view_rules(self):
+        client = auth.create_client(self.conn, self.user_id, "c1", "pw12345678")
+        stranger = auth.create_user(self.conn, "stranger", "pw")
+        other_adv = auth.create_user(self.conn, "adv2", "pw")
+        auth.set_advisor(self.conn, "adv2", True)
+        other_client = auth.create_client(self.conn, other_adv, "c2")
+
+        self.assertTrue(auth.can_view(self.conn, self.user_id, self.user_id))
+        self.assertTrue(auth.can_view(self.conn, self.user_id, client))
+        self.assertFalse(auth.can_view(self.conn, self.user_id, stranger))
+        self.assertFalse(auth.can_view(self.conn, self.user_id, other_client))  # someone else's client
+        self.assertTrue(auth.can_view(self.conn, client, client))
+        self.assertFalse(auth.can_view(self.conn, client, self.user_id))         # client can't see advisor
+        self.assertFalse(auth.can_view(self.conn, stranger, client))
+
+    def test_can_view_stops_when_advisor_rights_are_removed(self):
+        client = auth.create_client(self.conn, self.user_id, "c1")
+        auth.set_advisor(self.conn, "testuser", False)
+        self.assertFalse(auth.can_view(self.conn, self.user_id, client))
+
+    def test_only_advisors_create_clients_and_names_are_validated(self):
+        plain = auth.create_user(self.conn, "plain", "pw")
+        with self.assertRaises(ValueError):
+            auth.create_client(self.conn, plain, "c1")
+        with self.assertRaises(ValueError):
+            auth.create_client(self.conn, self.user_id, "bad name; drop")
+        with self.assertRaises(portfolio.DBError):
+            auth.create_client(self.conn, self.user_id, "testuser")   # taken
+
+
 class BulkCreateTests(TempDBMixin, unittest.TestCase):
     def test_parse_user_list_skips_blanks_and_comments(self):
         text = "alice,pw1\n\n# a comment\nbob\n  carol , pw3  \n"
