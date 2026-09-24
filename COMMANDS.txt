@@ -3,11 +3,32 @@ PORTFOLIO TRACKER — COMMAND REFERENCE
 Run everything from the project folder:
   cd "C:\Users\drewt\OneDrive\Documents\2026\AI Projects\portfolio-tracker"
 
-All commands below use your LOCAL database (portfolio.db) by default.
-To run any of them against your LIVE Neon database instead, add:
+**** LOCAL vs. LIVE — READ THIS FIRST ****
+Your local database (portfolio.db) and your live Neon database are
+COMPLETELY SEPARATE — separate accounts, separate positions, everything.
+Creating a user / importing a CSV / anything else on one does NOT touch
+the other. This has already caused real confusion once (created an
+account locally, then couldn't log into the live deployed app with it,
+because it only existed locally).
+
+All commands below use your LOCAL database by default. To run one
+against the LIVE database instead, add:
   --db "<your Neon connection string>"
 (get the exact string from your Neon console — never paste it into a file
 that gets committed to git)
+
+TIP — avoid retyping the connection string every time: set it once per
+PowerShell window, then reuse it:
+  $env:NEON_DSN = "<your Neon connection string>"
+  python manage_users.py --db $env:NEON_DSN create someone
+  python manage_users.py --db $env:NEON_DSN list
+(This only lasts for that one PowerShell window — you'll need to set it
+again in a new window. Don't put it in a script file that gets committed.)
+
+RULE OF THUMB: if you want an account/CSV import to show up on the
+website you and other people actually open in a browser, you almost
+certainly want --db $env:NEON_DSN. Only skip it for local testing that's
+never meant to go live.
 
 
 RUNNING THE DASHBOARD
@@ -41,9 +62,17 @@ Create several accounts at once from a text file (one per line, either
 for one you chose — passwords are shown ONCE in the output, save them):
   python manage_users.py bulk-create accounts.txt
 
-Against the live database:
-  python manage_users.py --db "<Neon connection string>" create <username>
-  python manage_users.py --db "<Neon connection string>" list
+Against the live database (do this for any account that needs to log
+into the actual deployed website — see the warning at the top of this
+file):
+  python manage_users.py --db $env:NEON_DSN create <username>
+  python manage_users.py --db $env:NEON_DSN list
+
+If you created someone locally by mistake and they can't log into the
+live site, just create the same username/password again with --db
+$env:NEON_DSN — the two databases don't sync, so this is the fix, not a
+bug:
+  python manage_users.py --db $env:NEON_DSN create <username>
 
 
 IMPORTING A CSV  (portfolio.py)
@@ -138,17 +167,28 @@ GitHub Actions:         repo → Settings → Secrets and variables → Actions
 QUICK ONE-OFF DATABASE CHECKS (Python)
 -------------------------------------------
 Run these with: python -c "<paste below>"   or in a script.
+Set $env:NEON_DSN first (see top of file), then use os.environ to read it
+instead of pasting the connection string into the script itself.
 
 List all accounts on the live database:
   import os, portfolio, pgcompat
-  conn = portfolio.connect("<Neon connection string>")
+  conn = portfolio.connect(os.environ["NEON_DSN"])
   for r in conn.execute("SELECT id, username, created_at FROM users"):
       print(dict(r))
   conn.close(); pgcompat.close_all_pools()
 
-Check one account's position count:
-  import portfolio, auth, pgcompat
-  conn = portfolio.connect("<Neon connection string>")
+List all accounts on your LOCAL database (for comparison — this is how
+you'd notice a "local vs live" mismatch like the one above):
+  import portfolio
+  conn = portfolio.connect("portfolio.db")
+  for r in conn.execute("SELECT id, username, created_at FROM users"):
+      print(dict(r))
+  conn.close()
+
+Check one account's position count (swap "portfolio.db" for
+os.environ["NEON_DSN"] to check the live database instead):
+  import portfolio, auth
+  conn = portfolio.connect("portfolio.db")
   uid = auth.get_user_id(conn, "<username>")
   print(conn.execute("SELECT COUNT(*) FROM positions WHERE user_id=?", (uid,)).fetchone()[0])
-  conn.close(); pgcompat.close_all_pools()
+  conn.close()
