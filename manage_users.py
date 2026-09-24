@@ -5,15 +5,18 @@ created (there is no signup anywhere in the web app itself).
   python manage_users.py create <username> [--db portfolio.db]
   python manage_users.py passwd <username> [--db portfolio.db]
   python manage_users.py list   [--db portfolio.db]
+  python manage_users.py bulk-create <file.txt> [--db portfolio.db]
 
-Password is always prompted interactively via getpass (never a CLI arg,
-so it never ends up in shell history or process listings).
+Password is always prompted interactively via getpass for `create`/`passwd`
+(never a CLI arg, so it never ends up in shell history or process
+listings). `bulk-create` is the exception - see its own docstring below.
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import secrets
 import sys
 
 import auth
@@ -56,6 +59,60 @@ def cmd_passwd(args) -> int:
     return 1
 
 
+def parse_user_list(text: str) -> list[tuple[str, str | None]]:
+    """One account per line: `username` or `username,password`. Blank lines
+    and `#`-comments are skipped. A line with no password gets a randomly
+    generated one (returned as None here, filled in by the caller) - that's
+    the normal case for adding a batch of new people quickly without
+    inventing N passwords by hand."""
+    out = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",", 1)]
+        username = parts[0]
+        password = parts[1] if len(parts) > 1 and parts[1] else None
+        if username:
+            out.append((username, password))
+    return out
+
+
+def cmd_bulk_create(args) -> int:
+    """Create many accounts from a text file in one pass - the file itself
+    can supply a password per line, or leave it out for a random one
+    (shown once in the output table, never stored anywhere recoverable).
+    Unlike `create`/`passwd`, a bulk file necessarily has passwords in
+    plain text on disk if you choose your own - delete it once you've
+    shared the credentials, and never commit it (it's exactly the kind of
+    file `git status`/`git add -A` could sweep in by accident)."""
+    conn = connect(args.db)
+    with open(args.file, encoding="utf-8") as fh:
+        entries = parse_user_list(fh.read())
+    if not entries:
+        print(f"No usernames found in {args.file} (one per line, blank lines/# comments skipped).")
+        return 1
+
+    rows = []
+    for username, password in entries:
+        generated = password is None
+        pw = password or secrets.token_urlsafe(9)
+        try:
+            user_id = auth.create_user(conn, username, pw)
+        except DBError:
+            rows.append((username, "already exists - skipped", None))
+            continue
+        rows.append((username, f"created (id={user_id})", pw if generated else "(as supplied)"))
+
+    w = max(len(r[0]) for r in rows)
+    print(f"{'Username':<{w}}  {'Status':<26}  Password")
+    for username, status, shown_pw in rows:
+        print(f"{username:<{w}}  {status:<26}  {shown_pw or ''}")
+    print("\nGenerated passwords are shown ONLY above, ONLY this once - save them now. "
+          "Delete the input file once everyone has their credentials.")
+    return 0
+
+
 def cmd_list(args) -> int:
     conn = connect(args.db)
     rows = conn.execute("SELECT id, username, created_at FROM users ORDER BY id").fetchall()
@@ -78,6 +135,9 @@ def main(argv=None) -> int:
     p_passwd = sub.add_parser("passwd", help="change an existing account's password")
     p_passwd.add_argument("username")
 
+    p_bulk = sub.add_parser("bulk-create", help="create many accounts at once from a text file")
+    p_bulk.add_argument("file", help="one 'username' or 'username,password' per line")
+
     sub.add_parser("list", help="list existing accounts")
 
     args = ap.parse_args(argv)
@@ -85,6 +145,8 @@ def main(argv=None) -> int:
         return cmd_create(args)
     if args.cmd == "passwd":
         return cmd_passwd(args)
+    if args.cmd == "bulk-create":
+        return cmd_bulk_create(args)
     return cmd_list(args)
 
 

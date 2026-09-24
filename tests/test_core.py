@@ -3,6 +3,7 @@
     python -m unittest discover -s tests        (from the repo root)
 """
 
+import argparse
 import contextlib
 import io
 import os
@@ -19,6 +20,7 @@ sys.path.insert(0, REPO)
 import alerts  # noqa: E402
 import allocation  # noqa: E402
 import auth  # noqa: E402
+import manage_users  # noqa: E402
 import changes  # noqa: E402
 import charts  # noqa: E402
 import metrics as M  # noqa: E402
@@ -548,6 +550,31 @@ class AuthTests(TempDBMixin, unittest.TestCase):
         perf.log_open(self.db, user_b, {"portfolio_value": 222}, min_gap_sec=0)
         self.assertEqual(perf.last_open(self.db, user_a)["portfolio_value"], 111)
         self.assertEqual(perf.last_open(self.db, user_b)["portfolio_value"], 222)
+
+
+class BulkCreateTests(TempDBMixin, unittest.TestCase):
+    def test_parse_user_list_skips_blanks_and_comments(self):
+        text = "alice,pw1\n\n# a comment\nbob\n  carol , pw3  \n"
+        self.assertEqual(manage_users.parse_user_list(text), [
+            ("alice", "pw1"), ("bob", None), ("carol", "pw3"),
+        ])
+
+    def test_bulk_create_generates_password_when_omitted_and_skips_existing(self):
+        conn = portfolio.connect(self.db)
+        path = os.path.join(self.dir, "users.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("testuser\nnewperson,chosenpw\n")  # testuser already exists (TempDBMixin)
+
+        args = argparse.Namespace(db=self.db, file=path)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = manage_users.cmd_bulk_create(args)
+        self.assertEqual(rc, 0)
+        self.assertIn("already exists", out.getvalue())
+
+        # newperson created with the chosen password (not regenerated)
+        self.assertEqual(auth.verify_login(conn, "newperson", "chosenpw"), auth.get_user_id(conn, "newperson"))
+        # testuser's original password is untouched
+        self.assertEqual(auth.verify_login(conn, "testuser", "testpass"), self.user_id)
 
 
 class WatchlistTests(TempDBMixin, unittest.TestCase):
