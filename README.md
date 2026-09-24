@@ -169,7 +169,9 @@ database keeps working after an update.
   with full access to each, plus an "Add client" form. Whose data is
   shown is re-checked against the database on every page load
   (`auth.can_view`), not trusted from the session. Clients can be
-  advisor-managed only (random password) or given a login.
+  advisor-managed only (random password) or given a login. A "Clients"
+  section (`overview.py`) summarizes every client - value, gain/loss %,
+  alert count, last import, profile completeness - with an Open button.
 - `.env`, `portfolio.db`, `imports/`, and `.dashboard_prefs*.json` are
   git-ignored.
 

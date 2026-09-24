@@ -78,7 +78,9 @@ bug:
 ADVISOR MODE  (manage_users.py)
 ----------------------------------
 An advisor can switch between their own portfolio and their clients' from
-the "Viewing" dropdown in the sidebar, and add new clients there too. Only
+the "Viewing" dropdown in the sidebar, and add new clients there too. The
+"Clients" section (advisors only) lists every client's value, gain/loss,
+alerts, last import date, and profile status, with an Open button. Only
 you (the admin) decide who is an advisor, with these commands. Add
 --db $env:NEON_DSN to do it on the live site.
 
@@ -147,7 +149,7 @@ RUNNING THE TEST SUITE
 ------------------------
   python -m unittest discover -s tests
 
-(86 tests as of this writing. Always run this before pushing changes.
+(88 tests as of this writing. Always run this before pushing changes.
 One of them fails if an API key or database password is sitting in a
 file git tracks - if it fails, remove the secret before you push.)
 

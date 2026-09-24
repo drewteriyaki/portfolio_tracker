@@ -36,6 +36,7 @@ import sync_history  # noqa: E402
 import update_prices  # noqa: E402
 import watchlist  # noqa: E402
 import news  # noqa: E402
+import overview  # noqa: E402
 import pgcompat  # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample_positions.csv")
@@ -972,6 +973,33 @@ class NewsTests(TempDBMixin, unittest.TestCase):
         news.upsert_news(conn, "AAPL", self.ARTICLES)
         n, err = news.sync_ticker(conn, "AAPL", token="not-a-real-key")
         self.assertEqual((n, err), (0, ""))
+        conn.close()
+
+
+class ClientsOverviewTests(TempDBMixin, unittest.TestCase):
+    def test_account_summary_matches_fixture(self):
+        conn = portfolio.connect(self.db)
+        portfolio.import_csv(conn, FIXTURE, self.user_id)
+        advisor.save_profile(conn, self.user_id, {"goal": "retire", "risk_tolerance": "moderate"})
+        s = overview.account_summary(conn, self.user_id, quotes={})
+        # fixture: AAA 1200 + BBB 450 + CCC 1600 holdings, 100 + 50 cash
+        self.assertEqual(s["portfolio_value"], 3400.0)
+        self.assertEqual(s["n_positions"], 3)
+        self.assertEqual(s["snapshot_date"], "2026-01-15")
+        self.assertIsNotNone(s["imported_at"])
+        # cost 3500 vs value 3250 -> -7.14%
+        self.assertAlmostEqual(s["gain_pct"], -7.14, places=2)
+        # default rules: CCC day move -6.5% (>5) and CCC total -20% is not > 20 -> 1 alert
+        self.assertEqual(s["n_alerts"], 1)
+        self.assertEqual((s["profile_answered"], s["profile_total"]), (2, 5))
+        conn.close()
+
+    def test_account_summary_empty_account(self):
+        conn = portfolio.connect(self.db)
+        s = overview.account_summary(conn, self.user_id, quotes={})
+        self.assertFalse(s["has_data"])
+        self.assertIsNone(s["portfolio_value"])
+        self.assertEqual(s["profile_answered"], 0)
         conn.close()
 
 

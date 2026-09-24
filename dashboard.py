@@ -99,8 +99,10 @@ ACTIVE_NAME = (st.session_state["username"] if USER_ID == LOGIN_ID
                else dict(CLIENTS).get(USER_ID, "client"))
 PREFS_PATH = os.path.join(HERE, f".dashboard_prefs.{USER_ID}.json")
 
-PAGES = ["Dashboard", "Watchlist", "Activity", "Income", "AI Assistant"]
-st.session_state.setdefault("page", PAGES[0])
+PAGES = ["Dashboard", *(["Clients"] if IS_ADVISOR else []),
+         "Watchlist", "Activity", "Income", "AI Assistant"]
+if st.session_state.get("page") not in PAGES:
+    st.session_state["page"] = PAGES[0]
 
 # kept when an advisor switches accounts; everything else is per-account
 _KEEP_ON_SWITCH = ("user_id", "username", "page")
@@ -120,6 +122,11 @@ def _switch_to(account_id):
 
 def _on_viewing_change():
     _switch_to(st.session_state["viewing_select"])
+
+
+def _open_client(account_id):
+    _switch_to(account_id)
+    st.session_state["page"] = "Dashboard"
 
 
 def _add_client():
@@ -213,6 +220,66 @@ QUICK_STARTS = {
     "Check for overlap and concentration": "Check my holdings for overlap between funds and "
                                            "for anything I'm too concentrated in.",
 }
+
+
+def _rules_for(account_id):
+    """That account's saved alert limits (its own prefs file), else defaults."""
+    try:
+        with open(os.path.join(HERE, f".dashboard_prefs.{account_id}.json"), encoding="utf-8") as fh:
+            saved = (json.load(fh) or {}).get("rules") or {}
+    except (OSError, ValueError, AttributeError):
+        saved = {}
+    return [{**r, "abs_gt": float(saved.get(r["key"], r["abs_gt"]))} for r in alerts.DEFAULT_RULES]
+
+
+def _render_clients():
+    import overview
+
+    st.subheader("Clients")
+    if not CLIENTS:
+        st.info("No clients yet - add one with **Add client** in the sidebar.")
+        return
+    conn = connect(DB)
+    try:
+        quotes = overview.latest_quotes(conn)
+        rows = [{**overview.account_summary(conn, cid, quotes, _rules_for(cid)), "name": name}
+                for cid, name in CLIENTS]
+    finally:
+        conn.close()
+    rows.sort(key=lambda r: r["portfolio_value"] or 0.0, reverse=True)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Clients", len(rows))
+    m2.metric("Total value", fmt_money(sum(r["portfolio_value"] or 0.0 for r in rows)))
+    m3.metric("With alerts", sum(1 for r in rows if r["n_alerts"]))
+    m4.metric("Profiles incomplete", sum(1 for r in rows if r["profile_answered"] < r["profile_total"]))
+
+    widths = [2, 1.5, 1.2, 1, 1, 1.4, 1.1, 1]
+    for col, head in zip(st.columns(widths), ["Client", "Value", "Gain/loss", "Positions",
+                                              "Alerts", "As of", "Profile", ""]):
+        col.caption(head)
+    for r in rows:
+        cols = st.columns(widths, vertical_alignment="center")
+        cols[0].markdown(f"**{r['name']}**")
+        if r["has_data"]:
+            cols[1].write(fmt_money(r["portfolio_value"]))
+            gain = r["gain_pct"]
+            if gain is None or _hidden():
+                cols[2].write(fmt_pct(gain))
+            else:
+                cols[2].markdown(f"<span style='color:{GREEN if gain >= 0 else RED}'>"
+                                 f"{fmt_pct(gain)}</span>", unsafe_allow_html=True)
+            cols[3].write(str(r["n_positions"]))
+            cols[4].write(str(r["n_alerts"]) if r["n_alerts"] else "—")
+            cols[5].write(r["snapshot_date"])
+        else:
+            cols[1].caption("No data yet")
+        done, total = r["profile_answered"], r["profile_total"]
+        cols[6].write("Complete" if done == total else f"{done}/{total}")
+        cols[7].button("Open", key=f"open_client_{r['user_id']}", on_click=_open_client,
+                       args=(r["user_id"],), width="stretch")
+    st.caption("Alerts use each client's own limits (set under **Rules** on their Dashboard). "
+               "Profile counts the AI Assistant questions answered.")
 
 
 def _render_assistant(contexts, cash_by_account):
@@ -559,6 +626,10 @@ if not positions and PAGE == "AI Assistant":
     # Helping brand-new investors plan a first portfolio is a core use of the
     # assistant, so it works before any CSV has been imported.
     _render_assistant([], {})
+    st.stop()
+if PAGE == "Clients":
+    # about the advisor's clients, not the viewed account's data
+    _render_clients()
     st.stop()
 if not positions:
     # Blank-account onboarding: a brand-new admin-provisioned account has no
