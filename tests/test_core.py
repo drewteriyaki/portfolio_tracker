@@ -8,7 +8,9 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -980,6 +982,33 @@ class NewsTests(TempDBMixin, unittest.TestCase):
         n, err = news.sync_ticker(conn, "AAPL", token="not-a-real-key")
         self.assertEqual((n, err), (0, ""))
         conn.close()
+
+
+class NoSecretsInRepoTests(unittest.TestCase):
+    """This repo is public. Fails if anything shaped like a real Anthropic API
+    key or a Neon database password sits in a git-tracked file - an API key
+    pasted into COMMANDS.txt nearly got pushed once."""
+
+    PATTERNS = {
+        "Anthropic API key": re.compile(r"sk-ant-(?:api|admin)\d\d-[A-Za-z0-9_-]{20,}"),
+        "Neon database password": re.compile(r"npg_[A-Za-z0-9]{8,}"),
+    }
+
+    def test_tracked_files_contain_no_secrets(self):
+        try:
+            files = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True,
+                                   text=True, check=True).stdout.split()
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        found = []
+        for rel in files:
+            try:
+                with open(os.path.join(REPO, rel), encoding="utf-8") as fh:
+                    text = fh.read()
+            except (OSError, UnicodeDecodeError):
+                continue  # deleted in the working tree, or binary
+            found += [f"{rel}: {label}" for label, pat in self.PATTERNS.items() if pat.search(text)]
+        self.assertEqual(found, [], "secret-looking values in tracked files - remove them before pushing")
 
 
 class PgCompatTests(unittest.TestCase):
