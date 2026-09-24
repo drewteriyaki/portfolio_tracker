@@ -169,7 +169,20 @@ class ConnWrapper:
             # transaction (psycopg defaults to autocommit=False), and
             # without this the pool's own reset-on-return logs a "rolling
             # back returned connection" warning on every single putconn.
-            self._conn.rollback()
+            #
+            # But a pooled connection can go stale between checkouts - Neon
+            # (or any server) can close an idle connection server-side, and
+            # rollback() over that dead socket raises psycopg.OperationalError
+            # (reproduced live: crashed the whole page with a traceback
+            # through psycopg_binary's PGconn.socket getter). Swallow that
+            # here rather than let a stale connection crash the request -
+            # pool.putconn() below already checks the connection's own
+            # broken/closed state and discards+replaces it instead of
+            # reusing it, which is exactly what should happen here too.
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
             self._pool.putconn(self._conn)
         else:
             self._conn.close()

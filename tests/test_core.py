@@ -749,6 +749,28 @@ class PgCompatTests(unittest.TestCase):
         # every DEFAULT clause should use it - count DEFAULT occurrences too
         self.assertEqual(n, sql.count("DEFAULT ("))
 
+    def test_close_swallows_rollback_failure_on_a_stale_pooled_connection(self):
+        # Reproduced live against Neon: a pooled connection that went stale
+        # between checkouts (server closed an idle connection) raised
+        # psycopg.OperationalError from rollback() itself, which crashed the
+        # whole page instead of just being treated as "discard this
+        # connection, the pool will make a fresh one." close() must never
+        # propagate a rollback failure.
+        class _DeadConn:
+            def rollback(self):
+                raise OSError("the socket is dead, as a stale pooled connection's would be")
+
+        putconn_calls = []
+
+        class _FakePool:
+            def putconn(self, conn):
+                putconn_calls.append(conn)
+
+        dead = _DeadConn()
+        wrapper = pgcompat.ConnWrapper(dead, pool=_FakePool())
+        wrapper.close()  # must not raise
+        self.assertEqual(putconn_calls, [dead])  # still handed back for the pool to discard
+
 
 class ChartsTests(unittest.TestCase):
     def _df(self, n=40):
