@@ -68,8 +68,9 @@ def upsert_news(conn: sqlite3.Connection, ticker: str, articles: list[dict]) -> 
         return 0
     before = conn.execute("SELECT COUNT(*) FROM news WHERE ticker = ?", (ticker,)).fetchone()[0]
     conn.executemany(
-        "INSERT OR IGNORE INTO news (id, ticker, headline, summary, source, url, published_at) "
-        "VALUES (:id, :ticker, :headline, :summary, :source, :url, :published_at)", rows)
+        "INSERT INTO news (id, ticker, headline, summary, source, url, published_at) "
+        "VALUES (:id, :ticker, :headline, :summary, :source, :url, :published_at) "
+        "ON CONFLICT (id) DO NOTHING", rows)
     conn.commit()
     after = conn.execute("SELECT COUNT(*) FROM news WHERE ticker = ?", (ticker,)).fetchone()[0]
     return after - before

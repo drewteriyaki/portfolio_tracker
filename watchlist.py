@@ -34,7 +34,7 @@ def add(conn: sqlite3.Connection, raw_ticker: str) -> str | None:
     t = normalize(raw_ticker)
     if not t:
         return None
-    conn.execute("INSERT OR IGNORE INTO watchlist (ticker) VALUES (?)", (t,))
+    conn.execute("INSERT INTO watchlist (ticker) VALUES (?) ON CONFLICT (ticker) DO NOTHING", (t,))
     conn.commit()
     return t
 
