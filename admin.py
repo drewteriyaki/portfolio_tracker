@@ -66,6 +66,56 @@ def set_admin(conn, username: str, flag: bool) -> bool:
     return cur.rowcount > 0
 
 
+DEFAULT_APP_URL = "https://app.northwend.app/"   # links in emails sent from the command line
+
+
+def app_url() -> str:
+    """The app's address for emails sent outside it (manage_users.py): the
+    APP_URL setting, else DEFAULT_APP_URL. The Admin page passes its own."""
+    import mailer
+    return mailer._setting("APP_URL") or DEFAULT_APP_URL
+
+
+def _advisor_email(conn, username: str) -> tuple[dict | None, str | None]:
+    """(the users row, the address to write to - their email, or a login
+    that is one - or None)."""
+    row = conn.execute("SELECT id, username, email, is_advisor FROM users WHERE username = ?",
+                       (username,)).fetchone()
+    if row is None:
+        return None, None
+    to = row["email"] or (row["username"] if auth.valid_email(row["username"]) else None)
+    return dict(row), to
+
+
+def approve_advisor(conn, username: str, app_link: str | None = None) -> dict:
+    """Make `username` an advisor (approving their request, if any) and email
+    them that it's ready (mailer.advisor_approved). Returns {"ok": False if
+    there's no such login, "emailed": True / False (the email failed) / None
+    (no address, or they were an advisor already - nothing to say)}."""
+    import mailer
+    row, to = _advisor_email(conn, username)
+    if row is None:
+        return {"ok": False, "emailed": None}
+    auth.set_advisor(conn, username, True)
+    if row["is_advisor"] or not to:
+        return {"ok": True, "emailed": None}
+    link = (app_link or app_url()).split("?")[0] + "?page=your-clients"
+    return {"ok": True, "emailed": mailer.advisor_approved(to, link)}
+
+
+def decline_advisor(conn, username: str, app_link: str | None = None) -> dict:
+    """Turn down a waiting advisor request and tell them, politely
+    (mailer.advisor_declined). Returns {"ok": False if there was no request
+    waiting, "emailed": True / False / None (no address)}."""
+    import mailer
+    if not auth.decline_advisor(conn, username):
+        return {"ok": False, "emailed": None}
+    _, to = _advisor_email(conn, username)
+    if not to:
+        return {"ok": True, "emailed": None}
+    return {"ok": True, "emailed": mailer.advisor_declined(to, (app_link or app_url()).split("?")[0])}
+
+
 def list_accounts(conn, *, now: datetime | None = None) -> list[dict]:
     """Every login with what the portal shows: id, username, email,
     confirmed, role ('admin' / 'advisor' / 'client' / 'investor'), advisor

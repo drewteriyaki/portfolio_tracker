@@ -52,6 +52,12 @@ def _kit_shown():
     return not IS_ADVISOR and USER_ID == LOGIN_ID
 
 
+def _kit_keys():
+    """The pieces in this account's kit (gear.kit_keys): an advisor's client's
+    has no rope, as Learn has no practice money for them (CLIENT_MODE)."""
+    return gear.kit_keys(CLIENT_MODE)
+
+
 def _milestone_done():
     """Continue, the X or Escape: the window is finished with."""
     st.session_state.pop("milestone_queue", None)
@@ -110,7 +116,7 @@ def _milestone_window(keys, have):
                 f"{html.escape(what)}</div>"
                 f"<div class='pt-gear-why'>{html.escape(gear.WHY[k])}</div>"
                 "</div>")
-    nxt = gear.next_up(have)
+    nxt = gear.next_up(have, _kit_keys())
     st.html(_next_html(nxt, "Next") if nxt else
             "<div class='pt-region'>That's every piece in your kit.</div>")
     with st.container(horizontal=True):
@@ -129,7 +135,7 @@ def check_milestones(value):
     when each piece was earned for the kit window (gear.stamp)."""
     if not _kit_shown():
         return
-    have = gear.earned(_gear_facts(value))
+    have = gear.earned(_gear_facts(value), _kit_keys())
     p = _read_prefs()
     fresh, seen = gear.new_since(have, p.get("gear_seen"))
     dates = gear.stamp(p.get("gear_dates"), have, fresh, datetime.now().date().isoformat())
@@ -147,11 +153,11 @@ def check_milestones(value):
 
 @st.dialog("Your kit", width="large", on_dismiss=_dialog_closed)
 def _kit_window(have):
-    st.caption(f"{len(have)} of {len(gear.KEYS)} earned. Each piece of gear marks something "
+    st.caption(f"{len(have)} of {len(_kit_keys())} earned. Each piece of gear marks something "
                "you've learned or a steady habit - never trading more or taking more risk. "
                "Nothing is ever lost, and there's no hurry.")
     dates = _read_prefs().get("gear_dates") or {}
-    for k in gear.KEYS:
+    for k in _kit_keys():
         got = k in have
         chip = (f"<span class='pt-gear-chip pt-gear-chip-earned'>"
                 f"{html.escape(gear.when_text(dates.get(k), _fmt_date))}</span>" if got else
@@ -179,17 +185,17 @@ def render_kit_card(value):
     the next one to earn, and the window that explains every piece."""
     if not _kit_shown():
         return
-    have = gear.earned(_gear_facts(value))
-    nxt = gear.next_up(have)
+    have = gear.earned(_gear_facts(value), _kit_keys())
+    nxt = gear.next_up(have, _kit_keys())
     with st.container(border=True, key="pt_kit"):
         cells = "".join(
             f"<li class='pt-gear-cell' title='{html.escape(_gear_hover(k), quote=True)}'>"
             f"<span class='pt-gear-tile{' pt-gear-earned' if k in have else ''}'>"
             f"{gear.icon_html(k, k in have)}</span>"
             f"<span class='pt-gear-label' aria-hidden='true'>{html.escape(_gear_name(k))}</span></li>"
-            for k in gear.KEYS)
+            for k in _kit_keys())
         st.html("<div class='pt-route-label'>Your kit · "
-                f"{len(have)} of {len(gear.KEYS)} earned</div>"
+                f"{len(have)} of {len(_kit_keys())} earned</div>"
                 "<div class='pt-region' style='margin:0'>Gear for learning and steady habits. "
                 "Filled ones are earned.</div>"
                 f"<ul class='pt-gear-row' aria-label='Your kit'>{cells}</ul>"

@@ -121,8 +121,9 @@ def _extract_json(text: str):
 def read(images: list[tuple[bytes, str]], api_key: str, *, client=None, model=None) -> dict:
     """Ask the AI to read `images`; returns clean()'s shape plus "error"
     (a message, or None) and "answered" (the AI replied, so the read counts
-    against the month's allowance; False when the request failed). `client`
-    is for tests."""
+    against the month's allowance; False when the request failed - then
+    "failure" holds the exception, for the server log). `client` is for
+    tests."""
     import anthropic
     if model is None:
         from advisor import MODEL as model
@@ -135,12 +136,12 @@ def read(images: list[tuple[bytes, str]], api_key: str, *, client=None, model=No
     try:
         resp = client.messages.create(model=model, max_tokens=MAX_TOKENS,
                                       messages=[{"role": "user", "content": content}])
-    except anthropic.AuthenticationError:
-        return {**empty, "error": "The AI key was rejected, so the screenshots couldn't be read."}
-    except anthropic.RateLimitError:
-        return {**empty, "error": "The AI is busy right now - try again in a minute."}
-    except anthropic.APIError as exc:
-        return {**empty, "error": f"The screenshots couldn't be read ({type(exc).__name__})."}
+    except anthropic.AnthropicError as exc:
+        # one calm sentence per kind of failure, never the error's own text;
+        # the caller logs `failure` (dashboard._ai_failed)
+        import ai_usage
+        return {**empty, "failure": exc,
+                "error": ai_usage.failure_text(exc, feature="Reading screenshots")}
     text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
     try:
         answer = _extract_json(text)

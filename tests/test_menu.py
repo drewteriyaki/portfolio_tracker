@@ -226,12 +226,17 @@ class MenuTests(unittest.TestCase):
         self.assertNotIn("nav_Advisor notes", self._keys(at, "nav_"))
         self.assertEqual(self._keys(at, "viewing_"), [])
         self.assertIn("add_client", self._keys(at, "add_"))
-        at.text_input(key="new_client_name").input("erin")
+        at.text_input(key="new_client_name").input("Erin Park")
         at.button(key="add_client").click()
         at.run()
         self.assertFalse(at.exception, [e.value for e in at.exception])
-        self.assertTrue(any("Added client 'erin'" in s.value for s in at.success))
+        self.assertTrue(any("Added Erin Park" in s.value for s in at.success))
+        # she stays on Your clients (to add the next one), with a way into the new account
+        self.assertEqual(at.session_state["active_user_id"], self.carol)
+        at.button(key="client_msg_open").click()
+        at.run()
         self.assertNotEqual(at.session_state["active_user_id"], self.carol)
+        self.assertEqual(at.session_state["page"], "Dashboard")
 
     def test_menus_close_and_mark_the_page_for_screen_readers(self):
         with open(os.path.join(REPO, "ui_enhancements.js"), encoding="utf-8") as fh:

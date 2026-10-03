@@ -551,6 +551,126 @@ def _render_what_if(plan, value, alloc_rows, today):
                 st.rerun()
 
 
+# ---- what the portfolio could pay each year (the retirement view) ---------- #
+RETIRE_TAB = "Retirement income"
+RETIRE_EXAMPLE = 100_000.0   # the example amount without real dollars to go on
+
+
+def _retire_income_today():
+    """What the holdings pay in a year (income.yearly_income): the Income
+    page's next-12-months dividend estimate plus cash interest from an
+    imported activity history. Only with holdings (the Income page's helpers
+    in views/income.py read them). Doesn't fetch anything."""
+    import income
+    today = datetime.now().date()
+    qty, annual = _income_held(), {}
+    for r in _income_yield_rows():
+        annual[r["symbol"]] = annual.get(r["symbol"], 0.0) + r["est_income"]
+    c = connect(DB)
+    try:
+        got = income.received(c, USER_ID, today)
+        synced = income.has_history(c, qty)
+        paid = income.payments(c, qty, today)
+    finally:
+        c.close()
+    sched = income.schedule([{"symbol": s, "quantity": q, "annual": annual.get(s)}
+                             for s, q in sorted(qty.items())], paid, synced, today)
+    return income.yearly_income(sched["total"], got), got is not None
+
+
+@st.fragment
+def _render_retirement_income(value, today):
+    """What the portfolio could pay each year: the dividends and interest it
+    pays now, steady withdrawals at a few rule-of-thumb rates, and how long
+    a chosen yearly amount could last at one stated growth rate. Education,
+    never advice: no amount here is a recommendation."""
+    pretend = SNAPSHOT_SOURCE == manual_entry.PCT_SOURCE
+    real = value is not None and value > 0 and not pretend
+    st.markdown("#### What your portfolio could pay you each year")
+    st.caption("Two ways to look at it: what your holdings pay on their own, and what taking a "
+               "steady share out each year could look like. Illustrations to learn from, not "
+               "advice and not a promise.")
+
+    # ---- what it pays today ---------------------------------------------- #
+    if value:
+        paid, has_history = _retire_income_today()
+        yld = paid["total"] / value * 100 if value else None
+        st.markdown("**What it pays today**")
+        if paid["total"]:
+            stats = [("Dividends, next 12 months", fmt_money0(paid["dividends"]), "estimated")]
+            if has_history:
+                stats.append(("Interest on cash", fmt_money0(paid["interest"]),
+                              "last 12 months"))
+            stats.append(("About a year", fmt_money0(paid["total"]),
+                          f"{mask_or(f'{yld:.1f}%')} of today's value"))
+            if pretend:   # pretend dollars: the share of the portfolio is what's real
+                stats = [("Pays about", mask_or(f"{yld:.1f}%"), "of its value a year")]
+            _summary_stats(stats)
+            st.caption("Paid to you without selling anything. The dividends repeat each "
+                       "holding's last year of payments at today's share count - companies and "
+                       "funds change their dividends, and some years they cut them."
+                       + (" Interest is what your brokerage paid on cash in the last 12 months."
+                          if has_history and not pretend else ""))
+        else:
+            st.caption("Your holdings don't show any dividends or interest yet. Payment dates "
+                       "fill in with each evening's price history.")
+        learn_more("dividends")
+
+    # ---- steady withdrawals at a few rates -------------------------------- #
+    st.markdown("**If you took a steady share out each year**")
+    base = value if real else RETIRE_EXAMPLE
+    # an example amount isn't anyone's own, so it isn't hidden
+    money = fmt_money0 if real else (lambda v: f"${v:,.0f}")
+    if not real:
+        lead = ("Your dollar amounts are pretend, so here" if pretend else
+                "Once your holdings are in, this uses their value. For now, here")
+        st.caption((f"{lead} is what each rate means for every {money(RETIRE_EXAMPLE)} "
+                    "invested.").replace("$", r"\$"))
+    _summary_stats([(f"{w['rate']:g}% a year", money(w["yearly"]),
+                     f"about {money(w['monthly'])} a month")
+                    for w in plans.withdrawals(base)])
+    _md("These are **rules of thumb, not a promise**. 4% is the best-known one: studies of past "
+        "US markets found that taking about 4% of the starting value in the first year, then "
+        "raising the amount with inflation, lasted 30 years in most periods. A lower rate leaves "
+        "more room for bad years; a higher one leaves less.  \n"
+        "Markets move: in a year the portfolio falls, the same amount is a bigger share of what's "
+        "left. The dividends and interest above are part of these amounts, not extra.  \n"
+        "Not included: taxes, fees, inflation, and income from elsewhere - Social Security or a "
+        "pension, for example.")
+
+    # ---- how long a yearly amount could last ------------------------------- #
+    if real:
+        st.markdown("**How long the money could last**")
+        if _hidden():
+            st.caption("Show amounts (the eye beside the page title) to try a yearly amount.")
+        else:
+            st.session_state.setdefault("retire_yearly",
+                                        float(max(100, round(value * 0.04 / 100) * 100)))
+            yearly = st.number_input("A yearly amount to try ($)", min_value=0.0, step=1000.0,
+                                     format="%.0f", key="retire_yearly")
+            if yearly > 0:
+                g = plans.LASTS_GROWTH_PCT
+                months = plans.months_lasting(value, yearly, g)
+                flat = plans.months_lasting(value, yearly, 0.0)
+                share = yearly / value * 100
+                if months is None:
+                    lasts = (f"would still be paying after {plans.LASTS_CAP_YEARS} years if the "
+                             f"rest grew a steady {g:g}% a year")
+                else:
+                    lasts = (f"would last about **{_months_text(months)}** - to around "
+                             f"{_fmt_month(plans.add_months(today, months).isoformat())} - if "
+                             f"the rest grew a steady {g:g}% a year")
+                _md(f"Taking {fmt_money0(yearly)} a year ({share:.1f}% of today's "
+                    f"{fmt_money0(value)}), a twelfth each month, the money {lasts}."
+                    + ("" if flat is None else
+                       f" With no growth at all, about {_months_text(flat)}."))
+            st.caption(f"Hypothetical: one steady growth rate, {plans.LASTS_GROWTH_PCT:g}% a "
+                       "year, and the same amount every year - before inflation, fees and "
+                       "taxes. Real returns go up and down, and a fall early on matters more "
+                       "than one later. Not a prediction.")
+    learn_more("risk")
+
+
 def _render_plan(value, growth, alloc_rows):
     """The Plan page. `value` / `growth` / `alloc_rows` are None for an
     account with no holdings yet - the goal and contributions still work."""
@@ -582,6 +702,13 @@ def _render_plan(value, growth, alloc_rows):
         sections.append(("Money in vs growth", lambda: _render_money_in(value, growth)))
     if alloc_rows:
         sections.append(("Target mix", lambda: _render_target_mix(alloc_rows)))
+    # what it could pay each year: for everyone, first for someone retired or
+    # nearly (plans.retirement_first: the goal, the timeline, the profile)
+    retire = (RETIRE_TAB, lambda: _render_retirement_income(value, today))
+    if plans.retirement_first(plan, _profile(), today):
+        sections.insert(0, retire)
+    else:
+        sections.append(retire)
     if ON_CLIENT:   # the client's advisor: proposals (views/proposals.py)
         sections.append(("Proposals", lambda: _render_proposals_advisor(alloc_rows, value)))
     for tab, (_name, draw) in zip(st.tabs([s[0] for s in sections]), sections):

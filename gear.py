@@ -174,18 +174,28 @@ def weathered_storm(values: list[tuple[str, float]], sells: list[str]) -> bool:
     return not any(high[:10] <= (s or "")[:10] <= low[:10] for s in sells)
 
 
-def earned(facts: dict) -> list[str]:
+def kit_keys(managed: bool = False) -> tuple[str, ...]:
+    """The pieces in this person's kit. An advisor's client has no practice
+    money on Learn (its example funds could cross their advisor's advice), so
+    no rope; the rest - learning and habits - are theirs too."""
+    return tuple(k for k in KEYS if not (managed and k in NOT_FOR_CLIENTS))
+
+
+NOT_FOR_CLIENTS = ("rope",)
+
+
+def earned(facts: dict, keys: tuple[str, ...] = KEYS) -> list[str]:
     """The keys of the gear earned, in kit order. `facts`: profile_done,
     goal_set, basics_done, practice_done, statement_in, steady, storm,
-    goal_reached (booleans)."""
-    return [k for k in KEYS if facts.get(NEED[k])]
+    goal_reached (booleans). `keys`: the kit (kit_keys())."""
+    return [k for k in keys if facts.get(NEED[k])]
 
 
-def next_up(earned_keys: list[str]) -> str | None:
+def next_up(earned_keys: list[str], keys: tuple[str, ...] = KEYS) -> str | None:
     """The next piece to point to: the first not earned that there's something
     to do for (the storm cloak just comes, so it waits its turn behind them),
     or None when the kit is full."""
-    todo = [k for k in KEYS if k not in earned_keys]
+    todo = [k for k in keys if k not in earned_keys]
     return next((k for k in todo if k in GO), todo[0] if todo else None)
 
 

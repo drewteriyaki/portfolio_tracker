@@ -44,10 +44,13 @@ def _fs_save(**changes):
 
 def _fs_steps():
     """The screens for this account: no goal screen when an advisor sets it,
-    no bring-it-in screen when the advisor brings statements in."""
+    no bring-it-in screen when the advisor brings statements in. An
+    advisor's client answers the questions only - no example mix (their
+    direction comes from their advisor) and no beginner's way in."""
     return [s for s in FIRST_STEPS
             if not (s[0] == "goal" and not CAN_MANAGE)
-            and not (s[0] == "bring" and not CAN_IMPORT)]
+            and not (s[0] == "bring" and (not CAN_IMPORT or CLIENT_MODE))
+            and not (s[0] == "direction" and CLIENT_MODE)]
 
 
 def first_steps_active(has_holdings):
@@ -60,7 +63,8 @@ def first_steps_active(has_holdings):
         return False
     import advisor
     missing = advisor.missing_fields(_profile())   # read once per run (dashboard.py)
-    return bool(missing) or not has_holdings
+    # (an advisor's client's statements are their advisor's to bring in)
+    return bool(missing) or (not has_holdings and not CLIENT_MODE)
 
 
 def _fs_save_answers(fields):
@@ -116,7 +120,8 @@ def _fs_move(i, delta):
     nxt = i + delta
     if nxt >= len(steps):
         _fs_save(done=True, step=0)
-        st.session_state["page"] = "Get started"
+        # an advisor's client goes back Home, to their advisor's next step
+        st.session_state["page"] = "Dashboard" if CLIENT_MODE else "Get started"
         return
     _fs_save(step=max(nxt, 0))
 
@@ -275,7 +280,17 @@ def render_first_steps(has_holdings):
         # a new key per screen, so each one slides in (the styles animate it)
         with st.container(border=True, key=f"pt_slide_{key}"):
             st.caption(f"Step {i + 1} of {len(steps)}")
-            if key == "welcome":
+            if key == "welcome" and CLIENT_MODE:
+                st.markdown(f"### Welcome to {APP_NAME}")
+                st.markdown("A few quick questions about you - every answer a tap - so your "
+                            "advisor knows your timeline and how you feel about ups and downs "
+                            "before you talk.")
+                st.markdown(":material/lock: **Private by design.** Only you and your advisor "
+                            "see your account. We never ask for your brokerage login.  \n"
+                            ":material/handshake: **Your plan is made with your advisor.** "
+                            f"{APP_NAME} is where you follow it together, and Learn has short "
+                            "reads whenever you'd like them.")
+            elif key == "welcome":
                 st.markdown(f"### Welcome to {APP_NAME}")
                 st.markdown(f"{APP_NAME} is your guide from first step to goal. A few quick "
                             "questions - every answer a tap - and it shows what kind of investor "

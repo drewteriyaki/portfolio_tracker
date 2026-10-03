@@ -98,9 +98,14 @@ class StagesTests(unittest.TestCase):
         learn, invest = route.STAGE_KEYS[route.LEARN], route.STAGE_KEYS[route.INVEST]
         self.assertEqual(route.route_keys(True), learn + invest)
         self.assertEqual(route.route_keys(False), invest)
-        # an advisor's client: Start investing is their advisor's - one waypoint
-        self.assertEqual(route.route_keys(True, managed=True), learn + ("bring",))
+        # an advisor's client: Start investing is their advisor's - one
+        # waypoint - and Learn is never required, its reads only (client mode)
+        self.assertFalse(route.learn_first("new", False, managed=True))
+        self.assertEqual(route.route_keys(True, managed=True),
+                         ("profile", "ready", "basics", "bring"))
         self.assertEqual(route.route_keys(False, managed=True), ("bring",))
+        self.assertEqual(route.stage_keys(route.LEARN, managed=True),
+                         ("profile", "ready", "basics"))
 
     def test_where_the_route_opens(self):
         done = {k: False for ks in route.STAGE_KEYS.values() for k in ks}

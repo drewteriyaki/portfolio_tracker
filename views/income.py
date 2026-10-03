@@ -9,6 +9,13 @@
 # for advisors and for Show everything (_show_everything).
 # ruff: noqa: F821
 
+# yield on cost, said once in plain words (the Income by holding table)
+YOC_LINE = ("**Yield on cost** is this year's estimated dividends as a share of what you paid "
+            "for the shares, rather than what they're worth today. When a company raises its "
+            "dividend after you buy, it goes up. Shown only where your cost is known.")
+YOC_HELP = ("This year's estimated dividends as a share of what you paid, for the holdings "
+            "whose cost is known.")
+
 INCOME_ASK = ("How do dividends and interest work, when do they get paid, and what does "
               "reinvesting them mean? Use examples, not recommendations.")
 
@@ -121,17 +128,25 @@ def _render_income_received(got, in_window=False):
 
 
 def _income_yield_rows():
-    """Each holding with a dividend yield from the brokerage's file, and its
-    estimated yearly income (market value x yield)."""
+    """Each holding with a dividend yield from the brokerage's file, its
+    estimated yearly income (market value x yield), and its yield on cost
+    (that income against what was paid - None when the cost isn't known, and
+    for a percentages-only portfolio, whose "cost" is only today's value)."""
+    import income
+    real_cost = SNAPSHOT_SOURCE != manual_entry.PCT_SOURCE
     rows = []
     for p, ctx in zip(positions, contexts):
         yld = M.value("div_yield_pct", ctx)
         mv = M.eff_mv(ctx)
         if yld is None or mv is None:
             continue
+        cost = p.get("cost_basis") if real_cost else None
+        est = mv * yld / 100
+        yoc = income.yield_on_cost(est, cost)
         rows.append({
             "symbol": p["symbol"], "description": p.get("description"), "market_value": mv,
-            "yield_pct": yld, "est_income": mv * yld / 100,
+            "yield_pct": yld, "est_income": est,
+            "cost": cost if yoc is not None else None, "yoc_pct": yoc,
             "last_pay_date": p.get("div_pay_date"),
             "reinvest": {1: "Yes", 0: "No"}.get(p.get("reinvest")), "account": p["account"],
         })
@@ -145,23 +160,30 @@ def _render_income_table(income_rows):
         st.caption("No dividend-yield figures from your brokerage's file - the table of yields "
                    "appears here when your broker's export includes a **Dividend Yield** column.")
         return
+    import income
     total_income = sum(r["est_income"] for r in income_rows)
     yield_on_holdings = (total_income / tot_mv * 100) if tot_mv else None
+    yoc_total = income.yield_on_cost_total(income_rows)
 
-    ic1, ic2, ic3 = st.columns(3)
-    ic1.metric("Est. annual dividend income", fmt_money(total_income))
-    ic2.metric("Yield on holdings", fmt_pct_level(yield_on_holdings))
-    ic3.metric("Income-producing positions", f"{len(income_rows)} / {len(positions)}")
+    cols = st.columns(4 if yoc_total is not None else 3)
+    cols[0].metric("Est. annual dividend income", fmt_money(total_income))
+    cols[1].metric("Yield on holdings", fmt_pct_level(yield_on_holdings))
+    if yoc_total is not None:
+        cols[2].metric("Your yield on cost", fmt_pct_level(yoc_total), help=YOC_HELP)
+    cols[-1].metric("Income-producing positions", f"{len(income_rows)} / {len(positions)}")
 
     idf_raw = pd.DataFrame([{
         "Symbol": r["symbol"], "Description": r["description"],
         "Market Value": r["market_value"], "Div Yield %": r["yield_pct"],
-        "Est. Annual Income": r["est_income"], "Last Pay Date": r["last_pay_date"],
+        "Yield on Cost %": r["yoc_pct"], "Est. Annual Income": r["est_income"],
+        "Last Pay Date": r["last_pay_date"],
         "Reinvest": r["reinvest"], "Account": r["account"],
     } for r in income_rows])
     idf = pd.DataFrame([{
         "Symbol": r["symbol"], "Description": r["description"],
         "Market Value": fmt_money(r["market_value"]), "Div Yield %": fmt_pct_level(r["yield_pct"]),
+        # blank when the cost isn't known
+        "Yield on Cost %": fmt_pct_level(r["yoc_pct"]) if r["yoc_pct"] is not None else "",
         "Est. Annual Income": fmt_money(r["est_income"]),
         "Last Pay Date": r["last_pay_date"] or "—", "Reinvest": r["reinvest"] or "—",
         "Account": r["account"],
@@ -178,6 +200,8 @@ def _render_income_table(income_rows):
                "— a simple estimate, not a payment schedule. **Last Pay Date** is the most "
                "recently known payment from your brokerage's file, not a prediction of the "
                "next one.")
+    if yoc_total is not None:
+        st.caption(YOC_LINE)
 
 
 # ---- the calm view's windows ------------------------------------------------ #
@@ -244,9 +268,13 @@ def _render_income_calm(income_rows, plan, unsynced, got):
                       f"{fmt_money(got['interest'])}", "See what was paid",
                       _income_received_window, (got,)))
     if income_rows:
+        import income
+        yoc = income.yield_on_cost_total(income_rows)
         tiles.append(("income_holdings", ":material/list:", "By holding",
                       f"{len(income_rows)} holding{'s' if len(income_rows) != 1 else ''} with a "
-                      f"dividend yield · most from {income_rows[0]['symbol']}",
+                      f"dividend yield · most from {income_rows[0]['symbol']}"
+                      + (f" · your yield on cost {fmt_pct_level(yoc)}"
+                         if yoc is not None else ""),
                       "See all holdings", _income_table_window, (income_rows,)))
     _detail_tiles(tiles)
     st.caption("Estimates repeat each holding's last year of payments at today's share count - "

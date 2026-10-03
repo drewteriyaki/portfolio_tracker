@@ -17,22 +17,19 @@ def _prep_draft(profile, summary, facts):
     key = _anthropic_key()
     quota = _ai_status("prep")
     if not key:
-        st.session_state["prep_msg"] = ("info", f"{GUIDE} needs an ANTHROPIC_API_KEY to draft "
-                                                "talking points.")
+        st.session_state["prep_msg"] = ("info", "Drafting talking points isn't available on "
+                                                "this site - write your own below.")
         return
     if not quota["ok"]:
         st.session_state["prep_msg"] = ("info", ai_usage.used_up_text(quota, "prep"))
         return
-    _ai_record("prep")
     try:
         pts = meeting.talking_points(anthropic.Anthropic(api_key=key), profile, summary, facts)
-    except anthropic.RateLimitError:
-        st.session_state["prep_msg"] = ("warning", f"{GUIDE} is busy right now - try again in "
-                                                   "a minute.")
+    except anthropic.AnthropicError as exc:
+        st.session_state["prep_msg"] = ("warning", _ai_failed(exc, "prep",
+                                                              "Drafting talking points"))
         return
-    except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
-        st.session_state["prep_msg"] = ("warning", f"Couldn't reach {GUIDE} ({exc}).")
-        return
+    _ai_record("prep")  # counted once it has answered
     st.session_state[f"prep_points_{USER_ID}"] = "\n".join(f"- {p}" for p in (pts or []))
 
 

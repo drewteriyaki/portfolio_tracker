@@ -406,17 +406,25 @@ class BeginnerPathTests(unittest.TestCase):
             self.assertNotIn("plan_back_route", self._keys(at))
 
     def test_advisor_and_client_see_learn(self):
-        # the advisor in a client's Learn: the same route, nothing breaks
+        # the advisor in a client's Learn: the same route, nothing breaks -
+        # it opens on their one waypoint, their statements brought in
         with self._run(self.carol, "carol", "Get started", active_user_id=self.dana,
                        two_step_ok=self.carol_ok) as at:
+            self.assertIn("gs_import", self._keys(at))
+            self.assertIn("Start investing · step 1 of 1", self._html(at))
+        with self._run(self.carol, "carol", "Get started", active_user_id=self.dana,
+                       two_step_ok=self.carol_ok, gs_at="profile") as at:
             self.assertIn("gs_complete", self._keys(at))
-            self.assertIn("Learn · step 1 of 6", self._html(at))
-        # the client herself: her advisor sets the goal - no goal form, no
-        # Complete until it's set, and Skip for now to move on
+            self.assertIn("Learn (optional for you) · step 1 of 3", self._html(at))
+        # the client herself (client mode): Learn is the reads only - her
+        # advisor sets the goal, and no example mix or practice money
         with self._run(self.dana, "dana", "Get started", gs_at="goal", fs_hide=True) as at:
             self.assertNotIn("gs_goal_save", self._keys(at))
-            self.assertTrue(at.button(key="gs_complete").disabled)
-            self.assertIn("gs_skip", self._keys(at))
+            self.assertEqual(at.session_state["gs_at"], "bring")   # goal isn't on it
+            at.segmented_control(key="gs_stage").set_value("learn").run()
+            self.assertEqual(at.pills(key="gs_pick").options,
+                             ["1. About you", "2. Are you ready to invest?",
+                              "3. Learn the basics"])
 
     def test_plan_wording(self):
         with self._run(self.fay, "fay", "Plan") as at:

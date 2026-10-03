@@ -292,12 +292,15 @@ class CalmPagesTests(unittest.TestCase):
         with self._run(self.erin, "erin", "Dashboard", holdings_pill="VTI") as at:
             self.assertRegex(next(m.value for m in at.metric if m.label == "% of Portfolio"),
                              level)
-            self.assertRegex(next(m.proto.delta for m in at.metric if m.label == "Total Return"),
+            self.assertRegex(next(m.proto.delta for m in at.metric if m.label == "Price change"),
                              r"^[+-]\d+\.\d\d%$")
             _, body = self._stats(at)
-            # Home's total gain/loss %: a change, signed
-            self.assertRegex(body, r"Total gain/loss</div>.*?pt-stat-sub'><span class='pt-up'>"
+            # Home's gain %: a change, signed (the price change, with the
+            # dividends imported for SCHD a total return beside it)
+            self.assertRegex(body, r"Price change</div>.*?pt-stat-sub'><span class='pt-up'>"
                                    r"\+\d+\.\d\d%")
+            self.assertRegex(body, r"Total return, with dividends</div>.*?pt-stat-sub'>"
+                                   r"<span class='pt-up'>\+\d+\.\d\d%")
 
     def test_stat_rows_are_lists(self):
         """Every row of stat boxes reads to a screen reader as a named list,
@@ -312,7 +315,10 @@ class CalmPagesTests(unittest.TestCase):
                 body = " ".join(h.proto.body for h in at.get("html"))
                 self.assertIn(f"<div class='pt-stats' role='list' aria-label='{label}'", body)
                 row = body.split(f"aria-label='{label}'", 1)[1].split("role='list'", 1)[0]
-                self.assertEqual(row.count("<div class='pt-stat' role='listitem'>"), 3, label)
+                # Home: four, with the dividends imported for SCHD (the price
+                # change, the total return with dividends, holdings, cash)
+                self.assertEqual(row.count("<div class='pt-stat' role='listitem'>"),
+                                 4 if page == "Dashboard" else 3, label)
                 if page == "Dashboard":
                     self.assertIn("$32,<wbr>250.00", row)       # wraps at a comma on a phone
         # the rows built by hand in the code, Learn's among them

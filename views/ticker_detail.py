@@ -158,7 +158,8 @@ if PAGE in ("Dashboard", "Watchlist"):
                 pc1.metric("Shares", fmt_qty(_qty))
                 pc2.metric("Avg Cost", fmt_price(_avg_cost))
                 pc3.metric("Market Value", fmt_money(_mv))
-                pc4.metric("Total Return", fmt_money(_unreal_usd),
+                # market value minus cost: the price change (dividends below, when known)
+                pc4.metric("Price change", fmt_money(_unreal_usd),
                           delta=(None if hide_amounts or _unreal_pct is None else f"{_unreal_pct:+.2f}%"))
 
                 pc5, pc6, pc7, pc8 = st.columns(4)
@@ -167,6 +168,29 @@ if PAGE in ("Dashboard", "Watchlist"):
                           delta=(None if hide_amounts or _dchg_pct is None else f"{_dchg_pct:+.2f}%"))
                 pc7.metric("% of Portfolio", fmt_pct_level(_pct_port))
                 pc8.metric("Account", _pos.get("account") or "—")
+
+                # total return: the price change plus the dividends it paid
+                # while held - only when they're known (else the price change alone)
+                _tr_usd = M.value("total_return_usd", _ctx)
+                if _tr_usd is not None:
+                    _tr_pct = M.value("total_return_pct", _ctx)
+                    _div = DIVIDENDS.get(_sym) or {}
+                    pc9, pc10, _pc11, _pc12 = st.columns(4)
+                    pc9.metric("Dividends received", fmt_money(M.value("dividends_usd", _ctx)))
+                    pc10.metric("Total return, with dividends", fmt_money(_tr_usd),
+                                delta=(None if hide_amounts or _tr_pct is None
+                                       else f"{_tr_pct:+.2f}%"))
+                    if _div.get("source") == "brokerage":
+                        _from = ("From your brokerage's activity history that you imported"
+                                 + (f", since {_fmt_date(_div['since'])}" if _div.get("since")
+                                    else "") + ".")
+                    else:
+                        _from = (f"Estimated from what {_sym} paid per share on each ex-dividend "
+                                 "date while you held it here"
+                                 + (f" (since {_fmt_date(_div['since'])}, when it first shows in "
+                                    "your holdings)" if _div.get("since") else "") + ".")
+                    st.caption("Total return is the price change plus the dividends this holding "
+                               f"paid. {_from} Dividends can change.")
             else:
                 st.markdown("#### On your watchlist")
                 st.caption("Not a position you own — tracking it for the chart and stats only.")

@@ -55,7 +55,10 @@ Live on Streamlit Community Cloud with Neon Postgres; locally it runs on SQLite.
   `asset_classes.py`, `metrics.py`, `alerts.py`, `changes.py` (buys/sells from
   snapshot differences), `plans.py`, `overview.py` (advisor clients), `fees.py` +
   `views/fees.py` (Fee check; `security_info.expense_ratio` is a fraction - Yahoo's
-  `netExpenseRatio` is a percent, the others fractions: `sync_history._expense_ratio`).
+  `netExpenseRatio` is a percent, the others fractions: `sync_history._expense_ratio`),
+  `fund_holdings.py` + `views/fund_overlap.py` (Fund overlap on Home: each fund's top 10
+  holdings from Yahoo, fetched only when the window opens, kept a week in the shared
+  `fund_top_holdings` table; yield on cost is `income.yield_on_cost`).
 - People: `auth.py` (logins, sessions, client setup links, self-serve sign-up,
   confirm / reset links, advisor requests), `two_step.py` + `views/two_step.py`
   (two-step sign-in: `_two_step_gate()` runs inside `_login()` after any way in;
@@ -74,7 +77,9 @@ Live on Streamlit Community Cloud with Neon Postgres; locally it runs on SQLite.
   progress reports, `views/reports.py`), `mailer.py` (Resend; `MAIL_DRY_RUN=1` logs instead of
   sending - use it for local runs), `manage_users.py`
   (admin account creation, AI limits), `ai_usage.py` (monthly AI allowances - any new
-  AI feature checks `_ai_status` and counts with `_ai_record`), `advising.py`,
+  AI feature checks `_ai_status`, counts with `_ai_record` only after a
+  successful answer, and shows failures via `_ai_failed` - never raw error text),
+  `advising.py`,
   `advisor.py` (the AI guide, Claude API with prompt caching), `prefs.py`, `accounts.py`.
 - Look: `.streamlit/config.toml` (the Northwend theme: colors per light/dark,
   Figtree text and Newsreader titles from `static/`, served at `app/static/`),
@@ -112,6 +117,10 @@ Live on Streamlit Community Cloud with Neon Postgres; locally it runs on SQLite.
 - Postgres differences: `REAL` becomes DOUBLE PRECISION; `interval` is a keyword
   (qualify it, `b.interval`); timestamps are ISO text `YYYY-MM-DDTHH:MM:SSZ`.
 - Every per-account query filters `user_id = ?`; advisors see clients only via `can_view`.
+  An advisor's name for a client is `advisor_clients.client_name` (not the client's
+  own Account name). Emails an advisor sends go out from their name via
+  `mailer.sender` (the address stays hello@); approving or declining an advisor
+  goes through `admin.approve_advisor` / `decline_advisor` (they send the email).
 - Account numbers are masked to the last 3 digits (`accounts.mask_number`);
   uploads are never stored (`portfolio.temp_upload`).
 - Never write tag-like text (`<html>`, `<div>`) in comments inside the app's
@@ -128,6 +137,9 @@ Live on Streamlit Community Cloud with Neon Postgres; locally it runs on SQLite.
   account can open. A new page goes in `NAV`, under Money or in the name menu -
   keep the bar short. A label change (`PAGE_LABELS`; investors see
   Get started as "Learn") changes its `?page=` slug: add the old one to `OLD_SLUGS`.
+- An advisor's client (or an advisor in a client's account) is `CLIENT_MODE`:
+  no example funds, no beginner trail or practice money; Home's next step is
+  the advisor's (`route.advisor_step`).
 - Never name the folder `pages/`: Streamlit turns that into its own page menu.
 - Edit files with the Edit tool. Python patch scripts inside Bash heredocs have
   turned `\n` in strings into real newlines before.

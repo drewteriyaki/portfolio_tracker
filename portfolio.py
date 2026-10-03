@@ -194,7 +194,9 @@ def _ensure_schema(conn) -> None:
                            ("is_admin", "INTEGER"), ("last_login_at", "TEXT"),
                            # the Account page (auth.set_display_name)
                            ("display_name", "TEXT")]),
-                ("advisor_clients", [("client_can_import", "INTEGER")]),
+                ("advisor_clients", [("client_can_import", "INTEGER"),
+                                     # the advisor's name for them (auth.set_client_name)
+                                     ("client_name", "TEXT")]),
                 # what a fund holds, from Yahoo (asset_classes.py)
                 ("security_info", [("quote_type", "TEXT"), ("category", "TEXT"),
                                    ("stock_pct", "REAL"), ("bond_pct", "REAL"),

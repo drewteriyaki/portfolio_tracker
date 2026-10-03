@@ -21,6 +21,31 @@ def _prop_msg(kind, text):
     st.session_state["prop_msg"] = (kind, text)
 
 
+def _prop_who_for_client(c, client_id):
+    """Before telling a client about a shared proposal: (their email or None,
+    the advisor's name as the client knows it, what to tell the advisor if no
+    email can go)."""
+    who = proposals.who_to_tell(c, client_id)
+    card = prefs.load(c, st.session_state["user_id"]).get("advisor_card") or {}
+    name = card.get("name") or st.session_state["username"]
+    if who["email"]:
+        return who["email"], name, ""
+    if not who["signed_in"]:
+        return None, name, (" They haven't set up their login yet, so no email went - send "
+                            "them a setup link from Client login at the top of their pages.")
+    return None, name, " They'll see it next time they sign in."
+
+
+def _prop_tell_client(email, advisor_name, note):
+    """Email the client that a proposal is waiting - no figures. What to add
+    to the advisor's message."""
+    if not email:
+        return note
+    if mailer.proposal_shared(email, f"{_app_address()}?page=your-advisor", advisor_name):
+        return f" We emailed {email} to let them know."
+    return " (The email to let them know couldn't be sent.)"
+
+
 def _prop_start_from(mixes):
     """Fill the new-proposal inputs from the chosen starting point."""
     pick = st.session_state.get("prop_start")
@@ -31,6 +56,7 @@ def _prop_start_from(mixes):
 
 def _prop_save(share):
     mix = {cls: st.session_state.get(f"prop_mix_{cls}") or 0.0 for cls in asset_classes.CLASSES}
+    tell = None
     c = connect(DB)
     try:
         if not _prop_advisor_ok(c):
@@ -39,8 +65,8 @@ def _prop_save(share):
         pid = proposals.save(c, st.session_state["user_id"], st.session_state["active_user_id"],
                              title=st.session_state.get("prop_title") or "",
                              mix=mix, note=st.session_state.get("prop_note") or "")
-        if share:
-            proposals.share(c, st.session_state["user_id"], pid)
+        if share and proposals.share(c, st.session_state["user_id"], pid):
+            tell = _prop_who_for_client(c, st.session_state["active_user_id"])
     except ValueError as exc:
         _prop_msg("error", str(exc))
         return
@@ -49,34 +75,49 @@ def _prop_save(share):
     for k in ("prop_title", "prop_note"):
         st.session_state[k] = ""
     _prop_msg("success", "Proposal shared - it's on their Advisor notes page now."
-              if share else "Saved as a draft - only you can see it until you share it.")
+              + _prop_tell_client(*tell) if share and tell else
+              "Saved as a draft - only you can see it until you share it.")
 
 
 def _prop_act(action, pid, mix=None):
+    tell = None
     c = connect(DB)
     try:
         if not _prop_advisor_ok(c):
             _prop_msg("error", "Only this client's advisor can do that.")
             return
         if action == "share":
-            proposals.share(c, st.session_state["user_id"], pid)
-            _prop_msg("success", "Shared with your client.")
+            if proposals.share(c, st.session_state["user_id"], pid):
+                tell = _prop_who_for_client(c, st.session_state["active_user_id"])
         elif action == "delete":
             proposals.delete(c, st.session_state["user_id"], pid)
             _prop_msg("success", "Proposal deleted.")
     finally:
         c.close()
+    if action == "share":
+        _prop_msg("success", "Shared with your client." + (_prop_tell_client(*tell)
+                                                           if tell else ""))
     if action == "target":
         save_alloc_targets(mix)
         _prop_msg("success", "That mix is now this client's target mix.")
 
 
 def _prop_answer(pid, accept):
+    me = st.session_state["user_id"]
+    advisor_email = None
     c = connect(DB)
     try:
-        ok = proposals.respond(c, st.session_state["user_id"], pid, accept)
+        ok = proposals.respond(c, me, pid, accept)
+        if ok:
+            # the advisor hears the same day, by email - no figures
+            p = proposals.get(c, pid)
+            advisor_email = proposals.who_to_tell(c, p["advisor_id"])["email"] if p else None
+            client_name = proposals.who_to_tell(c, me)["name"]
     finally:
         c.close()
+    if advisor_email:
+        mailer.proposal_answered(advisor_email, f"{_app_address()}?page=plan&client={me}",
+                                 client_name, accept)
     _prop_msg("success" if ok else "error",
               ("Thanks - your advisor will see that you'd like to go ahead." if accept else
                "Noted - your advisor will see you'd rather not right now.") if ok else

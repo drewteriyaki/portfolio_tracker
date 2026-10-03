@@ -29,7 +29,13 @@ Each statement about data here must stay true to the code:
   limits keep only hashes for a day (email_tokens / email_sends). Unconfirmed
   self-serve accounts can't use the AI (ai_usage.CONFIRM_FOR_AI). Advisor
   sign-ups store firm + licence (advisor_requests) and email them to the
-  support address (mailer.advisor_request) for the admin to check.
+  support address (mailer.advisor_request) for the admin to check; the
+  decision is emailed to them (admin.approve_advisor / decline_advisor).
+- Advisors' emails to clients (setup link, report waiting, a message waiting)
+  carry the advisor's name and firm in the From name only (mailer.sender);
+  report and message emails say something is waiting - never figures or the
+  message text. The advisor's name for a client ("Chen household") is
+  advisor_clients.client_name, seen only by that advisor.
 - Meeting prep talking points (meeting.facts_for_ai / talking_points): profile,
   advisor.portfolio_summary, and percentage facts - no dollars, no note text.
 - Advisors' Monday email (weekly_email.py, GitHub Actions): counts only (reviews

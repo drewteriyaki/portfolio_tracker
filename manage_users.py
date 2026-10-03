@@ -138,12 +138,27 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _emailed_note(emailed) -> str:
+    return {True: "Emailed them about it.",
+            False: "The email to them couldn't be sent - let them know yourself.",
+            None: ""}[emailed]
+
+
 def cmd_set_advisor(args, flag: bool) -> int:
+    """make-advisor also emails them that it's ready (admin.approve_advisor,
+    linking to APP_URL); remove-advisor sends nothing."""
     conn = connect(args.db)
-    if not auth.set_advisor(conn, args.username, flag):
+    if flag:
+        import admin
+        res = admin.approve_advisor(conn, args.username)
+        found = res["ok"]
+    else:
+        found, res = auth.set_advisor(conn, args.username, flag), {"emailed": None}
+    if not found:
         print(f"No such user: '{args.username}'.")
         return 1
-    print(f"'{args.username}' is {'now' if flag else 'no longer'} an advisor.")
+    print(f"'{args.username}' is {'now' if flag else 'no longer'} an advisor. "
+          + _emailed_note(res["emailed"]))
     return 0
 
 
@@ -189,12 +204,14 @@ def cmd_advisor_requests(args) -> int:
 
 
 def cmd_decline_advisor(args) -> int:
+    import admin
     conn = connect(args.db)
-    if not auth.decline_advisor(conn, args.username):
+    res = admin.decline_advisor(conn, args.username)
+    if not res["ok"]:
         print(f"'{args.username}' has no advisor request waiting.")
         return 1
     print(f"Declined '{args.username}''s advisor request - the account stays an investor "
-          "account.")
+          "account. " + _emailed_note(res["emailed"]))
     return 0
 
 

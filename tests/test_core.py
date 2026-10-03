@@ -1578,11 +1578,15 @@ class ClientOnboardingTests(TempDBMixin, unittest.TestCase):
             auth.create_client(conn, self.user_id, "not-an@email")
         token = auth.create_invite(conn, self.user_id, cid)
         sent = {}
-        with unittest.mock.patch.object(mailer, "send", lambda to, subject, text, html=None:
-                                        sent.update(to=to, subject=subject, text=text) or True):
+        with unittest.mock.patch.object(mailer, "send", lambda to, subject, text, html=None,
+                                        from_name=None: sent.update(
+                                            to=to, subject=subject, text=text,
+                                            from_name=from_name) or True):
             mailer.client_invite("pat.client@example.com", f"https://x/?invite={token}",
-                                 "Sam Advisor (Acme)", auth.INVITE_DAYS)
+                                 "Sam Advisor (Acme)", auth.INVITE_DAYS,
+                                 from_name="Sam Advisor, Acme")
         self.assertIn("Sam Advisor (Acme) invited you", sent["subject"])
+        self.assertEqual(sent["from_name"], "Sam Advisor, Acme")
         self.assertIn(f"?invite={token}", sent["text"])
         self.assertTrue(auth.accept_invite(conn, token, "clientpass1")["ok"])
         self.assertTrue(auth.email_status(conn, cid)["confirmed"])   # the advisor vouched

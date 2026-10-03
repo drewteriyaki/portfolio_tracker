@@ -263,8 +263,10 @@ def _client_rows(today):
         quotes = overview.latest_quotes(conn, [r["symbol"] for r in conn.execute(
             f"SELECT DISTINCT symbol FROM positions WHERE user_id IN ({_in})", _ids)])
         # read for the whole book at once, not once per client
-        logins = {r["id"]: r["last_login_at"] for r in conn.execute(
-            f"SELECT id, last_login_at FROM users WHERE id IN ({_in})", _ids)}
+        logins, emails = {}, {}
+        for r in conn.execute(f"SELECT id, last_login_at, email FROM users WHERE id IN ({_in})",
+                              _ids):
+            logins[r["id"]], emails[r["id"]] = r["last_login_at"], r["email"]
         all_props = {}
         for r in conn.execute("SELECT client_id, status, COUNT(*) AS n FROM proposals WHERE "
                               f"client_id IN ({_in}) AND status IN ('shared', 'accepted') "
@@ -297,7 +299,8 @@ def _client_rows(today):
             login = logins.get(cid)
             login_days = ((today - date.fromisoformat(login[:10])).days if login else None)
             props = all_props.get(cid, {})
-            rows.append({**summ, "name": name, "plan": plan, "goal": goal, "drift": drift,
+            rows.append({**summ, "name": name, "email": emails.get(cid), "plan": plan,
+                         "goal": goal, "drift": drift,
                          "can_import": cid in can_import,
                          "review": review, "review_days": days, "n_steps": len(steps),
                          "login_days": login_days, "proposals": props,
@@ -305,7 +308,7 @@ def _client_rows(today):
                          "reasons": advising.attention(
                              has_data=summ["has_data"],
                              goal_status=goal["status"] if goal else None, review=review,
-                             n_alerts=summ["n_alerts"], drift=drift,
+                             n_alerts=summ["n_alerts_attention"], drift=drift,
                              profile_done=summ["profile_answered"] >= summ["profile_total"],
                              proposal_accepted=bool(props.get("accepted")),
                              days_since_login=login_days)})
@@ -316,21 +319,153 @@ def _client_rows(today):
     return rows
 
 
-def _render_add_client():
-    """Add client, at the top of Your clients: an email (for a setup link) or
-    a username, and an optional password. The new client opens straight away."""
+def _client_msg():
+    """The message from Add client, renaming or a send - with an Open button
+    for the client it's about."""
     msg = st.session_state.pop("client_msg", None)
-    if msg:
-        getattr(st, msg[0])(msg[1])
+    if not msg:
+        return
+    getattr(st, msg[0])(msg[1])
+    if len(msg) > 2 and msg[2] in dict(CLIENTS):
+        st.button(f"Open {dict(CLIENTS)[msg[2]]}", key="client_msg_open", icon=":material/login:",
+                  on_click=_open_client, args=(msg[2],))
+
+
+def _render_add_client():
+    """Add client, at the top of Your clients: their name or household and
+    their email; with an email, the setup link goes out in the same step.
+    Before the first invite, the advisor's own name and firm (who it's from)."""
+    _client_msg()
     with st.expander(":material/person_add: Add client", expanded=not CLIENTS):
-        st.text_input("Email or username", key="new_client_name",
-                      help="With their email address you can email them a setup link: "
-                           "they choose a password and answer the goals and risk questions "
-                           "before your first meeting.")
-        st.text_input("Login password (optional)", type="password", key="new_client_pw",
-                      help="Best left blank: then send them a setup link (Client login) "
-                           "so they choose their own. Or leave them without a login.")
-        st.button("Add client", key="add_client", on_click=_add_client, type="primary")
+        c1, c2 = st.columns(2)
+        c1.text_input("Name or household", key="new_client_name", max_chars=auth.CLIENT_NAME_MAX,
+                      placeholder="e.g. Dana Lee or Chen household",
+                      help="How they're listed for you. Only you see it; you can change it "
+                           "later.")
+        c2.text_input("Their email", key="new_client_email", max_chars=100,
+                      placeholder="name@example.com",
+                      help="Where the setup link goes. Leave it blank to manage the account "
+                           "yourself for now.")
+        has_email = bool((st.session_state.get("new_client_email") or "").strip())
+        invite = st.checkbox("Email them a setup link", value=True, key="new_client_invite",
+                             disabled=not has_email,
+                             help="They choose their own password - you never see it - then "
+                                  "answer a few questions about their goals before your first "
+                                  "meeting.") and has_email
+        if invite:
+            conn = connect(DB)
+            try:
+                card = prefs.load(conn, LOGIN_ID).get("advisor_card") or {}
+            finally:
+                conn.close()
+            if not card.get("name"):
+                st.markdown("**Who's it from?** Your name and firm go in the invite, so they "
+                            "know it's you.")
+                c1, c2 = st.columns(2)
+                c1.text_input("Your name", key="new_adv_name", max_chars=60,
+                              placeholder="e.g. Dana Ruiz")
+                c2.text_input("Firm (optional)", key="new_adv_firm", max_chars=80,
+                              placeholder="e.g. Ruiz Wealth")
+                st.caption("Saved under **How clients see you** at the bottom of this page, "
+                           "where you can change it any time.")
+        st.button("Add and send invite" if invite else "Add client", key="add_client",
+                  on_click=_add_client, type="primary")
+
+
+def _rename_client(client_id):
+    name = st.session_state.get(f"rename_{client_id}")
+    c = connect(DB)
+    try:
+        ok = auth.set_client_name(c, st.session_state["user_id"], client_id, name)
+    finally:
+        c.close()
+    if ok:
+        st.session_state["client_msg"] = ("success", "Saved the new name."
+                                          if auth.clean_client_name(name) else
+                                          "Name cleared - they're listed by their own name or "
+                                          "login.")
+
+
+def _send_message():
+    """Message clients: a Note on each picked client's Your advisor page, and
+    a short email to those who can sign in and have a confirmed email - it
+    only says there's a message (no text, no figures)."""
+    viewer = st.session_state["user_id"]
+    picked = st.session_state.get("msg_clients") or []
+    body = st.session_state.get("msg_body") or ""
+    st.session_state["msg_confirm"] = False
+    c = connect(DB)
+    try:
+        res = advising.message_clients(c, viewer, picked, body,
+                                       now=datetime.now(timezone.utc),
+                                       today=datetime.now().date())
+        to_email = []
+        if res["ok"]:
+            ids = tuple(res["sent_to"])
+            to_email = [r["email"] for r in c.execute(
+                "SELECT email FROM users WHERE id IN (" + ", ".join("?" for _ in ids) + ") "
+                "AND email IS NOT NULL AND email_verified_at IS NOT NULL "
+                "AND last_login_at IS NOT NULL ORDER BY id", ids)]
+        card = prefs.load(c, viewer).get("advisor_card") or {}
+    finally:
+        c.close()
+    if not res["ok"]:
+        st.session_state["msg_result"] = ("warning", res["error"])
+        return
+    body_name, from_name = _advisor_names(card, st.session_state["username"])
+    emailed = 0
+    for i, email in enumerate(to_email):
+        if i:
+            time.sleep(0.6)   # the email service takes a couple a second
+        emailed += bool(mailer.advisor_message(email, f"{_app_address()}?page=your-advisor",
+                                               body_name, from_name=from_name))
+    n, in_app = len(res["sent_to"]), len(res["sent_to"]) - emailed
+    text = (f"Sent to {n} client{'s' if n != 1 else ''} - it's on their Advisor notes page. "
+            + (f"Emailed {emailed} that it's there. " if emailed else "")
+            + (f"{in_app} will see it next time they sign in "
+               "(no confirmed email or login yet" + (", or the email couldn't be sent"
+                                                    if len(to_email) > emailed else "") + ")."
+               if in_app else ""))
+    st.session_state["msg_result"] = ("success", text.strip())
+    st.session_state["msg_body"] = ""
+
+
+def _render_message_clients(rows):
+    """Your clients: one message to all clients (or some), checked before it goes."""
+    with st.expander(":material/campaign: Message clients"):
+        res = st.session_state.pop("msg_result", None)
+        if res:
+            getattr(st, res[0])(res[1])
+        names = {r["user_id"]: r["name"] for r in rows}
+        if "msg_clients" not in st.session_state:
+            st.session_state["msg_clients"] = list(names)
+        st.session_state["msg_clients"] = [i for i in st.session_state["msg_clients"]
+                                           if i in names]
+        st.multiselect("To", list(names), key="msg_clients", format_func=names.get,
+                       placeholder="Pick clients",
+                       on_change=lambda: st.session_state.update(msg_confirm=False))
+        st.text_area("Message", key="msg_body", max_chars=advising.MESSAGE_MAX,
+                     placeholder="e.g. Markets have been bumpy this week. Your plan already "
+                                 "allows for this - no need to do anything. Happy to talk any "
+                                 "time.",
+                     on_change=lambda: st.session_state.update(msg_confirm=False))
+        n = len(st.session_state.get("msg_clients") or [])
+        ready = n and (st.session_state.get("msg_body") or "").strip()
+        if st.session_state.get("msg_confirm") and ready:
+            st.warning(f"Send this message to {n} client{'s' if n != 1 else ''}? It's added to "
+                       "their Advisor notes page, and those with a confirmed email get a short "
+                       "note that it's there.")
+            with st.container(horizontal=True):
+                st.button(f"Yes, send to {n}", key="msg_send", type="primary",
+                          on_click=_send_message)
+                st.button("Cancel", key="msg_cancel", type="tertiary",
+                          on_click=lambda: st.session_state.update(msg_confirm=False))
+        else:
+            st.button(f"Review and send to {n} client{'s' if n != 1 else ''}", key="msg_review",
+                      type="primary", disabled=not ready,
+                      on_click=lambda: st.session_state.update(msg_confirm=True))
+        st.caption("Each client sees it as a note from you on their Advisor notes page. The "
+                   "email only says there's a message - the text stays in Northwend.")
 
 
 def _render_clients():
@@ -358,6 +493,7 @@ def _render_clients():
                 "</div></div></div>"))
 
         _render_reports_bulk(rows)
+        _render_message_clients(rows)
 
         # narrow the book down (ROADMAP G9)
         with st.container(horizontal=True, vertical_alignment="bottom"):
@@ -374,7 +510,9 @@ def _render_clients():
             "Review due": lambda r: r["review"] != "ok",
             "Waiting on you": lambda r: bool(r["proposals"].get("accepted") or r["n_steps"]),
         }[show]
-        rows = [r for r in rows if wanted(r) and find.strip().lower() in r["name"].lower()]
+        _find = find.strip().lower()
+        rows = [r for r in rows if wanted(r) and (_find in r["name"].lower()
+                                                   or _find in (r["email"] or "").lower())]
         if not rows:
             st.caption("No clients match.")
 
@@ -404,17 +542,31 @@ def _render_clients():
                 if r["login_days"] is not None:
                     bits.append("signed in today" if r["login_days"] == 0
                                 else f"signed in {r['login_days']}d ago")
+                else:
+                    bits.append("login not set up yet")
+                # the email as plain text (st.html: no mailto link), under the name
+                email = (r["email"] if r["email"] and r["email"] != r["name"] else "")
                 st.html(
                     "<div class='pt-goal-top'>"
                     f"<b>{html.escape(r['name'])}</b>"
                     + (f"<span>{fmt_money0(r['portfolio_value'])}</span>"
                        f"{_tone(gain, fmt_pct(gain)) if gain is not None else ''}"
                        if r["has_data"] else "<span class='pt-muted'>no statement yet</span>")
-                    + f"</div><div style='margin:.45rem 0'>{chips}</div>"
+                    + "</div>"
+                    + (f"<div class='pt-goal-sub'>{html.escape(email)}</div>" if email else "")
+                    + f"<div style='margin:.45rem 0'>{chips}</div>"
                     f"<div class='pt-goal-sub'>{' · '.join(bits)}</div>")
                 with st.container(horizontal=True, vertical_alignment="center"):
                     st.button("Open", key=f"open_client_{r['user_id']}", on_click=_open_client,
                               args=(r["user_id"],))
+                    with st.popover("Rename", type="tertiary", width=110):
+                        st.text_input("Name or household", value=r["name"],
+                                      key=f"rename_{r['user_id']}",
+                                      max_chars=auth.CLIENT_NAME_MAX,
+                                      help="Only you see it. Leave it blank to go back to "
+                                           "their own name or login.")
+                        st.button("Save name", key=f"rename_save_{r['user_id']}",
+                                  type="primary", on_click=_rename_client, args=(r["user_id"],))
                     key = f"can_import_{r['user_id']}"
                     st.session_state[key] = r["can_import"]  # always what's saved
                     st.toggle("Client can import", key=key, on_change=_set_can_import,
@@ -423,7 +575,9 @@ def _render_clients():
                                    "goal, target mix and alert limits stay yours to set.")
         st.caption(f"Sorted by what needs a look. Reviews are due {advising.REVIEW_EVERY_DAYS} days "
                    f"after the last one; drift is flagged past {advising.DRIFT_ATTENTION_PTS:g} "
-                   "points from the plan's target mix; alerts use each client's own limits; a "
+                   "points from the plan's target mix; alerts count holdings past the "
+                   "client's own day-move limit, or down past their gain/loss limit (gains "
+                   "don't count); a "
                    f"client who used to sign in is flagged after {advising.INACTIVE_DAYS} days "
                    "away.")
     st.divider()
@@ -450,34 +604,25 @@ def _open_from_summary(client_id):
 
 
 def _render_week_summary(summary, *, where):
-    """Reviews due, coming due, and other clients needing a look, each with
-    an Open button."""
+    """Each client who needs a look this week, once, with all their reasons
+    (reviews due first, then coming due, then the rest), each with Open."""
     if not summary["any"]:
         st.markdown(":material/check_circle: Nothing due this week - every review is up "
                     "to date and no client needs a look.")
         return
-    groups = (
-        ("due", "Reviews due",
-         lambda r: "never reviewed" if r["review"] == "never"
-         else f"last review {r['review_days']} days ago"),
-        ("soon", f"Coming due in the next {advising.SOON_DAYS} days",
-         lambda r: f"due in {r['in_days']} day{'s' if r['in_days'] != 1 else ''}"),
-        ("attention", "Also needs a look", lambda r: ", ".join(r["other"])),
-    )
-    for group, title, why in groups:
-        items = summary[group]
-        if not items:
-            continue
-        st.markdown(f"**{title}** · {len(items)}")
-        for r in items[:WEEK_LIST_MAX]:
-            with st.container(horizontal=True, vertical_alignment="center"):
-                st.markdown(f"{r['name'].replace('_', chr(92) + '_')} - {why(r)}",
-                            width="stretch")
-                st.button("Open", key=f"wk_{where}_{group}_{r['user_id']}", type="tertiary",
-                          on_click=_open_from_summary, args=(r["user_id"],),
-                          help=f"Open {r['name']}'s dashboard")
-        if len(items) > WEEK_LIST_MAX:
-            st.caption(f"and {len(items) - WEEK_LIST_MAX} more on Your clients.")
+    items = summary["clients"]
+    for r in items[:WEEK_LIST_MAX]:
+        with st.container(horizontal=True, vertical_alignment="center"):
+            # plain text (st.html), so a client listed by email isn't a mailto link
+            st.html(f"<b>{html.escape(r['name'])}</b> - {html.escape(', '.join(r['why']))}",
+                    width="stretch")
+            st.button("Open", key=f"wk_{where}_{r['user_id']}", type="tertiary",
+                      on_click=_open_from_summary, args=(r["user_id"],),
+                      help=f"Open {r['name']}'s portfolio")
+    if len(items) > WEEK_LIST_MAX:
+        st.caption(f"and {len(items) - WEEK_LIST_MAX} more on Your clients."
+                   if where != "clients" else
+                   f"and {len(items) - WEEK_LIST_MAX} more - they're first in the list below.")
 
 
 # Advisors: once a week (from Monday), the first visit opens with this week's
@@ -502,8 +647,8 @@ if IS_ADVISOR and CLIENTS and PAGE != "Clients":
                 st.markdown(f":material/event_upcoming: **This week** - "
                             f"{len(_summary['due'])} review{'s' if len(_summary['due']) != 1 else ''}"
                             f" due, {len(_summary['soon'])} coming up, "
-                            f"{len(_summary['attention'])} other client"
-                            f"{'s' if len(_summary['attention']) != 1 else ''} to look at.")
+                            f"{len(_summary['others'])} other client"
+                            f"{'s' if len(_summary['others']) != 1 else ''} to look at.")
                 _render_week_summary(_summary, where="notice")
                 with st.container(horizontal=True):
                     st.button("Your clients", key="week_clients", type="primary",

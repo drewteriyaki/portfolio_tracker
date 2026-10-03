@@ -297,3 +297,70 @@ def projection_series(current_value: float, monthly: float, months: int, *, toda
              "mid": future_value(current_value, monthly, return_pct, n),
              "high": future_value(current_value, monthly, return_pct + spread, n)}
             for n in points]
+
+
+# --------------------------------------------------------------------------- #
+# what the portfolio could pay each year (the Plan's retirement view)
+# --------------------------------------------------------------------------- #
+# Rules of thumb for a yearly withdrawal, as a share of today's value. 4% is
+# the best-known one, from studies of past US markets over 30-year
+# retirements; 3-5% is the range planners usually talk about. Illustrations,
+# never advice: nothing here says what anyone should take out.
+WITHDRAWAL_RATES = (3.0, 4.0, 5.0)
+# The one stated growth rate for "how long it lasts": modest on purpose,
+# before inflation, fees and taxes.
+LASTS_GROWTH_PCT = 4.0
+LASTS_CAP_YEARS = 60
+# A goal date this close (or a profile that says so) puts the view first.
+NEAR_YEARS = 10
+_RETIRED_ANSWERS = {"age_range": ("65 or older",),
+                    "income_stability": ("Not working or retired",),
+                    "contributions": ("Withdrawing regularly",)}
+_INCOME_GOALS = ("Retirement", "Generate income")
+
+
+def withdrawals(value: float, rates=WITHDRAWAL_RATES) -> list[dict]:
+    """[{"rate", "yearly", "monthly"}]: `rate`% of `value` a year."""
+    value = max(0.0, float(value or 0.0))
+    return [{"rate": float(r), "yearly": value * r / 100, "monthly": value * r / 100 / 12}
+            for r in rates]
+
+
+def months_lasting(present: float, yearly: float, growth_pct: float = LASTS_GROWTH_PCT, *,
+                   cap_years: int = LASTS_CAP_YEARS) -> int | None:
+    """Whole months `present` keeps paying `yearly` (a twelfth at the start
+    of each month), the rest growing at `growth_pct` a year. None when it's
+    still paying after `cap_years` (or nothing is taken out); 0 when there
+    isn't a first month's amount."""
+    present, yearly = float(present or 0.0), float(yearly or 0.0)
+    if yearly <= 0:
+        return None
+    take, r, value = yearly / 12, _monthly_rate(growth_pct), present
+    for n in range(cap_years * 12):
+        if value + 1e-9 < take:
+            return n
+        value = (value - take) * (1 + r)
+    return None
+
+
+def retirement_first(plan: dict | None, profile: dict | None, today: date) -> bool:
+    """Whether the Plan leads with what the portfolio could pay each year:
+    for someone retired or about to be - an answer that says so (65 or
+    older, not working or retired, withdrawing regularly), or a retirement
+    or income goal that isn't known to be more than NEAR_YEARS away (the
+    plan's goal date, else the profile's time horizon)."""
+    p = profile or {}
+    if any(p.get(k) in v for k, v in _RETIRED_ANSWERS.items()):
+        return True
+    goals = {g.strip() for g in str(p.get("goal") or "").split(";")}
+    if (plan or {}).get("goal_type"):
+        goals.add(plan["goal_type"])
+    if not goals & set(_INCOME_GOALS):
+        return False
+    if has_goal(plan) and plan.get("goal_type") in _INCOME_GOALS:
+        return months_until(plan["target_date"], today) <= NEAR_YEARS * 12
+    try:
+        years = float(p.get("time_horizon_years"))
+    except (TypeError, ValueError):
+        return True     # a retirement goal, with no timeline to say it's far off
+    return years <= NEAR_YEARS

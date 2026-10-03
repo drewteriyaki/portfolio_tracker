@@ -118,6 +118,19 @@ def _unreal_usd(ctx):
     return (mv - cost) if (mv is not None and cost is not None) else None
 
 
+def _dividends(ctx):
+    """The dividends this holding paid while held (income.received_while_held,
+    put in the context as "dividends"), or None - nothing known or nothing paid."""
+    return _f(ctx.get("dividends")) or None
+
+
+def _total_return_usd(ctx):
+    """Price change plus dividends; None without dividends (the price change
+    alone is Unrealized G/L)."""
+    gain, divs = _unreal_usd(ctx), _dividends(ctx)
+    return (gain + divs) if (gain is not None and divs) else None
+
+
 def _unreal_csv_usd(ctx):
     mv, cost = _p(ctx, "market_value"), _p(ctx, "cost_basis")
     return (mv - cost) if (mv is not None and cost is not None) else None
@@ -157,6 +170,11 @@ METRICS: list[Metric] = [
     Metric("unrealized_usd", "Unrealized G/L $", "Gain/Loss", _unreal_usd, "money", color_sign=True),
     Metric("unrealized_pct", "Unrealized G/L %", "Gain/Loss",
            lambda c: _ratio(_unreal_usd(c), _p(c, "cost_basis")), "pct", color_sign=True),
+    Metric("dividends_usd", "Dividends received $", "Gain/Loss", _dividends, "money"),
+    Metric("total_return_usd", "Total return $ (with dividends)", "Gain/Loss", _total_return_usd,
+           "money", color_sign=True),
+    Metric("total_return_pct", "Total return % (with dividends)", "Gain/Loss",
+           lambda c: _ratio(_total_return_usd(c), _p(c, "cost_basis")), "pct", color_sign=True),
     Metric("unrealized_csv_usd", "Unrealized G/L $ (CSV)", "Gain/Loss", _unreal_csv_usd, "money", color_sign=True),
     Metric("unrealized_csv_pct", "Unrealized G/L % (CSV)", "Gain/Loss",
            lambda c: _ratio(_unreal_csv_usd(c), _p(c, "cost_basis")), "pct", color_sign=True),
@@ -206,7 +224,13 @@ AVAILABLE = [m for m in METRICS if m.available]
 DEFAULT_KEYS = [
     "account", "symbol", "description", "quantity", "price",
     "cost_basis", "market_value", "unrealized_usd", "unrealized_pct",
+    # shown only when some holding has dividends to add (a column with
+    # nothing in it is left out of the table: SHOWN_WHEN_KNOWN)
+    "total_return_usd", "total_return_pct",
 ]
+# Columns the Holdings table leaves out when every holding's value is blank:
+# without dividends to add, the price change alone is shown, as before.
+SHOWN_WHEN_KNOWN = ("dividends_usd", "total_return_usd", "total_return_pct")
 
 
 def value(key: str, ctx: dict):

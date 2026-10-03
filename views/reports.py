@@ -11,18 +11,27 @@ import reports
 
 
 def _rep_save_one(c, viewer, target, kind, message, value, today):
-    """Build and save one client's report; (label, the client's email or None)."""
+    """Build and save one client's report; (label, the client's email or None,
+    a setup link if they haven't set up their login yet, else None)."""
     start, end, label = reports.period_bounds(kind, today, reports.last_end(c, target))
     facts = reports.build(c, target, start, end, value_now=value, today=today)
     reports.save(c, viewer, target, label=label, start=start, end=end, facts=facts,
                  message=message)
-    return label, auth.email_status(c, target)["email"]
+    email = auth.email_status(c, target)["email"]
+    setup = None
+    if email and not auth.has_signed_in(c, target):
+        # "sign in to read it" would be a dead end for them: a fresh setup link goes along
+        setup = f"{_app_address()}?invite={auth.create_invite(c, viewer, target)}"
+    return label, email, setup
 
 
-def _rep_tell(email, label, advisor_name):
-    """Email a client that a report is waiting - no figures. True if sent."""
-    return mailer.report_ready(email, f"{_app_address()}?page=advisor-notes", advisor_name,
-                               label)
+def _rep_tell(email, label, card, setup=None):
+    """Email a client that a report is waiting - no figures - from the
+    advisor's name and firm, with a setup link for a client who hasn't set
+    up their login yet. True if sent."""
+    body_name, from_name = _advisor_names(card, st.session_state["username"])
+    return mailer.report_ready(email, f"{_app_address()}?page=advisor-notes", body_name, label,
+                               setup_link=setup, days=auth.INVITE_DAYS, from_name=from_name)
 
 
 def _rep_send(value):
@@ -34,16 +43,19 @@ def _rep_send(value):
         if viewer == target or not auth.can_view(c, viewer, target):
             st.session_state["rep_msg"] = ("error", "Only this client's advisor can send a report.")
             return
-        label, email = _rep_save_one(c, viewer, target, kind,
-                                     st.session_state.get("rep_message") or "", value, today)
+        label, email, setup = _rep_save_one(c, viewer, target, kind,
+                                            st.session_state.get("rep_message") or "", value,
+                                            today)
         card = prefs.load(c, viewer).get("advisor_card") or {}
     finally:
         c.close()
     st.session_state["rep_message"] = ""
     note = ""
     if email:
-        sent = _rep_tell(email, label, card.get("name") or st.session_state["username"])
-        note = f" We emailed {email} that it's waiting." if sent else             " (The email to let them know couldn't be sent.)"
+        sent = _rep_tell(email, label, card, setup)
+        note = ((f" They haven't set up their login yet, so we emailed {email} a setup link "
+                 "with it." if setup else f" We emailed {email} that it's waiting.") if sent
+                else " (The email to let them know couldn't be sent.)")
     st.session_state["rep_msg"] = ("success", f"Sent the {label} report - it's on their "
                                               f"Advisor notes page.{note}")
 
@@ -65,26 +77,29 @@ def _rep_send_all(values):
         for cid in picked:
             if cid == viewer or not auth.can_view(c, viewer, cid):
                 continue
-            label, email = _rep_save_one(c, viewer, cid, kind, message, values.get(cid), today)
+            label, email, setup = _rep_save_one(c, viewer, cid, kind, message,
+                                                values.get(cid), today)
             done.append(label)
             if email:
-                to_tell.append((email, label))
+                to_tell.append((email, label, setup))
         card = prefs.load(c, viewer).get("advisor_card") or {}
     finally:
         c.close()
-    name = card.get("name") or st.session_state["username"]
     failed = 0
-    for i, (email, label) in enumerate(to_tell):
+    for i, (email, label, setup) in enumerate(to_tell):
         if i:
             time.sleep(0.6)   # the email service takes a couple a second
-        failed += not _rep_tell(email, label, name)
+        failed += not _rep_tell(email, label, card, setup)
     st.session_state["rep_all_message"] = ""
     st.session_state["rep_all_clients"] = []
     told = len(to_tell) - failed
+    setups = sum(1 for *_, setup in to_tell if setup)
     st.session_state["rep_all_msg"] = (
         "success", f"Sent {len(done)} report{'s' if len(done) != 1 else ''} - each client reads "
         f"theirs on their Advisor notes page."
         + (f" Emailed {told} that it's waiting." if told else "")
+        + (f" {setups} hadn't set up their login yet, so their email came with a setup link."
+           if setups else "")
         + (f" {failed} email(s) couldn't be sent." if failed else ""))
 
 
@@ -123,7 +138,8 @@ def _render_reports_bulk(rows):
                   args=({r["user_id"]: r["portfolio_value"] for r in rows},))
         st.caption("Each client gets their own figures for the period; clients who already "
                    "have this period's report start unticked. Each reads theirs on their "
-                   "Advisor notes page - the email only says it's there.")
+                   "Advisor notes page - the email only says it's there. A client who hasn't "
+                   "set up their login yet gets a setup link in that email.")
 
 
 def _rep_body(rep, money):
@@ -176,7 +192,8 @@ def _render_report_advisor(value):
         st.button(f"Send the {label} report to {ACTIVE_NAME}", key="rep_send", type="primary",
                   on_click=_rep_send, args=(value,))
         st.caption("They read it on their Advisor notes page. The email only tells them it's "
-                   "there - the figures aren't sent by email.")
+                   "there - the figures aren't sent by email. If they haven't set up their "
+                   "login yet, the email has a setup link too.")
         if sent:
             st.markdown("**Sent before:** " + ", ".join(
                 f"{r['period_label']} ({'read' if r['read_at'] else 'not read yet'})"

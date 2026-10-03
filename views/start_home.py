@@ -155,6 +155,71 @@ def _render_start_home():
     check_milestones(None)
 
 
+def _client_ask(step_key):
+    st.session_state["coach_prompt"] = CLIENT_ASK.get(step_key, CLIENT_ASK["bring_advisor"])
+    st.session_state["page"] = "AI Assistant"
+
+
+# what "Ask Northwend" starts with for an advisor's client's next step
+# (route.advisor_step; Home's ROUTE_ASK too): questions to understand and to
+# bring to their advisor - never what to buy
+CLIENT_ASK = {
+    "proposal": "My advisor has shared a proposal for my investments. Help me understand "
+                "what to look at in it, and what questions I could ask them. Explain, don't "
+                "recommend.",
+    "report": "My advisor sent me a progress report. Help me understand the terms in it and "
+              "what questions I could ask them.",
+    "profile_advisor": "My advisor asked me about my timeline and how I feel about ups and "
+                       "downs. What do those questions mean, and why do they matter?",
+    "bring_advisor": "I'm starting to work with a financial advisor. What's useful to know "
+                     "before our first conversation, and what could I ask them?",
+}
+
+
+def _render_client_home(preview=False):
+    """Home before anything is brought in, for an advisor's client (client
+    mode, CLIENT_MODE): their advisor's next step, their goal once it's set,
+    and Learn's reads there for them - no practice money, example portfolio
+    or example funds, which could cross what their advisor recommends.
+    `preview`: their advisor, under the ways to bring statements in."""
+    st.session_state["gs_has_holdings"] = False
+    state = _route_state(False)
+    plan = state["plan"]
+    has_goal = plans.has_goal(plan)
+    gp = _goal_progress(plan, 0.0) if has_goal else None
+    step = _client_step(state, False)   # always one before anything is in
+    title, line, button, action = _client_step_words(step)
+    if preview:
+        st.markdown(f"#### What {ACTIVE_NAME} sees on Home")
+    with st.container(border=True, key="pt_route"):
+        head = "<div class='pt-route-label'>Your next step, with your advisor</div>"
+        if has_goal:
+            label, tone = PLAN_STATUS[gp["status"]]
+            head += (f"<div class='pt-goal-top'><b>{html.escape(plan.get('goal_name') or plan['goal_type'] or 'Goal')}</b>"
+                     f"<span class='pt-chip {tone}'>{label}</span></div>"
+                     f"<div class='pt-goal-sub'>{fmt_money0(gp['target'])} by "
+                     f"{_fmt_month(plan['target_date'])}</div>")
+        else:
+            head += ("<div class='pt-goal-sub'>Your advisor sets your goal with you - it shows "
+                     "up here once they have.</div>")
+        st.html(head)
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.markdown((f":material/flag: **Next: {title}**" + (f"  \n{line}" if line else ""))
+                        .replace("$", r"\$"), width="stretch")
+            st.button(button, key="route_go", type="primary", on_click=_start_go, args=(action,))
+            st.button(f"Ask {GUIDE}", key="route_ask", type="tertiary", on_click=_client_ask,
+                      args=(step["key"],))
+    with st.container(horizontal=True, vertical_alignment="center", key="pt_client_learn"):
+        st.markdown(":material/school: **Learn at your own pace.** Short reads on the basics - "
+                    "funds, spreading your money out, fees, ups and downs - whenever you'd like "
+                    "them.", width="stretch")
+        st.button(f"Open {_label('Get started')}", key="client_learn", type="tertiary",
+                  on_click=_start_go, args=(("learn", "basics"),))
+    if not preview:
+        render_kit_card(None)      # learning and habits only (views/kit.py)
+        check_milestones(None)
+
+
 # what each page shows once there's something in it
 NOT_YET_LINES = {
     "Income": (":material/payments:", "Once you've made your first investment, the dividends "

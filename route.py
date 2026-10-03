@@ -117,6 +117,10 @@ STAGE_KEYS = {
 # the first investments are their advisor's, so Start investing is the one
 # waypoint - their holdings brought in
 MANAGED_INVEST_KEYS = ("bring",)
+# ...and Learn is the reads only, never required: their goal is set with
+# their advisor, and the example mix and practice money (which name example
+# funds) could cross what their advisor recommends
+MANAGED_LEARN_KEYS = ("profile", "ready", "basics")
 EXPERIENCED = ("some", "experienced")   # advisor.EXPERIENCE_LEVELS past "new"
 
 
@@ -125,27 +129,52 @@ def stage_of(key: str) -> str:
     return LEARN if key in STAGE_KEYS[LEARN] else INVEST
 
 
-def learn_first(experience: str | None, has_real_holdings: bool) -> bool:
+def learn_first(experience: str | None, has_real_holdings: bool,
+                managed: bool = False) -> bool:
     """Learn is part of this person's route (not optional): someone new to
     investing - "New", or not answered yet - who hasn't brought in holdings
     of their own. Someone with experience, or already investing, starts at
-    Start investing (or Home); Learn stays open to them, marked optional."""
-    if has_real_holdings:
+    Start investing (or Home); Learn stays open to them, marked optional.
+    Never for an advisor's client: their route is with their advisor."""
+    if has_real_holdings or managed:
         return False
     return (experience or "").strip().lower() not in EXPERIENCED
 
 
 def stage_keys(stage: str, managed: bool = False) -> tuple[str, ...]:
     """A stage's waypoints for this account, in order."""
-    if stage == INVEST and managed:
-        return MANAGED_INVEST_KEYS
+    if managed:
+        return MANAGED_INVEST_KEYS if stage == INVEST else MANAGED_LEARN_KEYS
     return STAGE_KEYS[stage]
 
 
 def route_keys(learn_required: bool, managed: bool = False) -> tuple[str, ...]:
     """The waypoints on this person's route, in order: Learn's (when it's
     theirs - learn_first()) and then Start investing's."""
-    return (STAGE_KEYS[LEARN] if learn_required else ()) + stage_keys(INVEST, managed)
+    return ((stage_keys(LEARN, managed) if learn_required else ())
+            + stage_keys(INVEST, managed))
+
+
+def advisor_step(*, proposals_waiting: int, reports_new: int, profile_missing: bool,
+                 has_holdings: bool) -> dict | None:
+    """An advisor's client's next step, in their advisor's voice - or None,
+    and next_step() decides (their goal, drift...). In order:
+
+    proposal         - a proposal is waiting for their answer
+    report           - a progress report they haven't opened yet
+    profile_advisor  - the questions about them, for their advisor
+    bring_advisor    - nothing brought in yet: their statements, with their advisor
+
+    Never a beginner's waypoint: their plan is made with their advisor."""
+    if proposals_waiting:
+        return {"key": "proposal", "n": proposals_waiting}
+    if reports_new:
+        return {"key": "report", "n": reports_new}
+    if profile_missing:
+        return {"key": "profile_advisor"}
+    if not has_holdings:
+        return {"key": "bring_advisor"}
+    return None
 
 
 def opening(route: list[str], shown: list[str], done: dict[str, bool]) -> str:

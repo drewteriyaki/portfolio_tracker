@@ -106,6 +106,29 @@ def respond(conn, client_id: int, proposal_id: int, accept: bool) -> bool:
     return cur.rowcount > 0
 
 
+def who_to_tell(conn, user_id: int) -> dict:
+    """Who to email about a proposal: {"email": an address it's fine to email
+    or None, "name": what they're called, "signed_in": they've signed in at
+    least once}. Only a confirmed email (a client's is confirmed once they set
+    up their login), or an advisor's an admin set up (as weekly_email.py) -
+    so a client who hasn't set up their login isn't sent to a dead end."""
+    row = conn.execute("SELECT username, display_name, email, email_verified_at, "
+                       "terms_version, is_advisor, last_login_at FROM users WHERE id = ?",
+                       (user_id,)).fetchone()
+    if row is None:
+        return {"email": None, "name": "", "signed_in": False}
+    ok = bool(row["email"]) and bool(row["email_verified_at"] or (
+        row["is_advisor"] and not row["terms_version"]))
+    return {"email": row["email"] if ok else None,
+            "name": row["display_name"] or row["username"],
+            "signed_in": bool(row["last_login_at"])}
+
+
+def get(conn, proposal_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+    return _row(row) if row else None
+
+
 def for_client(conn, client_id: int, *, include_drafts: bool) -> list[dict]:
     """Newest first. A client sees only what was shared with them."""
     sql = "SELECT * FROM proposals WHERE client_id = ?"

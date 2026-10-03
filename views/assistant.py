@@ -47,8 +47,8 @@ def _render_assistant(contexts, cash_by_account):
         st.toast("Profile updated from the conversation.")
     api_key = _anthropic_key()
     if not api_key:
-        st.info(f"{GUIDE} needs an `ANTHROPIC_API_KEY` - add it to `.env` locally, or to "
-                "Settings → Secrets on Streamlit Cloud.")
+        # the set-up detail (no ANTHROPIC_API_KEY) is on Admin > System
+        st.info(f"Ask {GUIDE} isn't available on this site right now.")
         return
 
     profile, memory = _assist_profile()
@@ -117,11 +117,9 @@ def _render_assistant(contexts, cash_by_account):
     if prompt and not at_limit:
         import anthropic
 
-        _ai_record("chat")
-        if quota["left"] is not None:
-            quota["left"] -= 1
         display.append({"role": "user", "text": prompt})
         history.append({"role": "user", "content": prompt})
+        n_history = len(history)
         with chat_box, st.chat_message("user"):
             st.markdown(prompt)
 
@@ -149,15 +147,17 @@ def _render_assistant(contexts, cash_by_account):
                 reply = st.write_stream(advisor.stream_reply(
                     anthropic.Anthropic(api_key=api_key), history, system, on_update,
                     on_memory))
-            except anthropic.AuthenticationError:
-                reply = "The ANTHROPIC_API_KEY was rejected - check that it's correct."
-                st.error(reply)
-            except anthropic.RateLimitError:
-                reply = f"{GUIDE} is busy right now - wait a minute and try again."
-                st.error(reply)
-            except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
-                reply = f"Couldn't reach {GUIDE}: {exc}"
-                st.error(reply)
+            except anthropic.AnthropicError as exc:
+                # one calm sentence, never the error's text (_ai_failed); the
+                # question leaves the history so the next try asks it afresh,
+                # and nothing is counted against the month's allowance
+                reply = _ai_failed(exc, "chat")
+                del history[n_history - 1:]
+                st.warning(reply)
+            else:
+                _ai_record("chat")  # counted once it has answered
+                if quota["left"] is not None:
+                    quota["left"] -= 1
         display.append({"role": "assistant", "text": reply if isinstance(reply, str) else "".join(reply)})
         if updated:
             # rerun so the profile form shows the new values; the toast is

@@ -36,13 +36,24 @@ def _admin_set_own_role():
                           + ("advisor app." if want_advisor else "investor app.")))[1])
 
 
+def _admin_told(res):
+    """What the approve / decline email did, for the message."""
+    return {True: " We emailed them to let them know.",
+            False: " The email to them couldn't be sent - let them know yourself.",
+            None: ""}[res["emailed"]]
+
+
 def _admin_decide(username, approve):
+    """An advisor request: approve or decline it, and email them either way
+    (admin.approve_advisor / decline_advisor)."""
     def act(c):
         if approve:
-            auth.set_advisor(c, username, True)
-            return ("success", f"{username} is now an advisor.")
-        auth.decline_advisor(c, username)
-        return ("success", f"Declined {username}'s advisor request.")
+            res = admin.approve_advisor(c, username, _app_address())
+            return ("success", f"{username} is now an advisor." + _admin_told(res))
+        res = admin.decline_advisor(c, username, _app_address())
+        if not res["ok"]:
+            return ("info", f"{username} has no advisor request waiting.")
+        return ("success", f"Declined {username}'s advisor request." + _admin_told(res))
     _admin_do(act)
 
 
@@ -86,9 +97,15 @@ def _admin_reset_two_step(user_id, username):
 
 
 def _admin_advisor(username, flag):
-    _admin_do(lambda c: (auth.set_advisor(c, username, flag),
-                         ("success", f"{username} is {'now' if flag else 'no longer'} an "
-                                     "advisor."))[1])
+    """An account's role: making someone an advisor approves them, so they get
+    the same "your advisor access is ready" email."""
+    def act(c):
+        if flag:
+            res = admin.approve_advisor(c, username, _app_address())
+            return ("success", f"{username} is now an advisor." + _admin_told(res))
+        auth.set_advisor(c, username, False)
+        return ("success", f"{username} is no longer an advisor.")
+    _admin_do(act)
 
 
 def _admin_ai(user_id, username, unlimited):
@@ -293,6 +310,9 @@ def _render_admin():
     st.subheader(f"Advisor requests ({len(requests)})", anchor=False)
     if not requests:
         st.caption("None waiting.")
+    else:
+        st.caption("Approve or decline - either way they get a short email saying so. "
+                   "Approved advisors are asked to set up two-step sign-in, then add a client.")
     for r in requests:
         with st.container(border=True, horizontal=True, vertical_alignment="center"):
             st.markdown(f"**{r['username']}** · {r['firm']} · CRD/licence **{r['licence']}** · "

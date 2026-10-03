@@ -329,11 +329,13 @@ def accept_invite(conn, token: str, password: str, *, now: datetime | None = Non
         return {"ok": False, "error": f"Use a password of at least {MIN_PASSWORD_LENGTH} "
                 "characters.", "user_id": None, "username": None}
     conn.execute("DELETE FROM invites WHERE user_id = ?", (info["user_id"],))
+    stamp = _utc(now or datetime.now(timezone.utc))
     # an email the advisor gave counts as confirmed once the client is in
     conn.execute("UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) "
-                 "WHERE id = ? AND email IS NOT NULL", (_utc(now or datetime.now(timezone.utc)),
-                                                        info["user_id"]))
-    set_password(conn, info["username"], password)  # commits all three
+                 "WHERE id = ? AND email IS NOT NULL", (stamp, info["user_id"]))
+    # they're signed in straight away, so this counts as their first sign-in
+    conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (stamp, info["user_id"]))
+    set_password(conn, info["username"], password)  # commits all four
     return {"ok": True, "error": None, "user_id": info["user_id"], "username": info["username"]}
 
 
@@ -836,11 +838,53 @@ def unlink_client(conn: sqlite3.Connection, advisor_id: int, client_id: int) -> 
     conn.commit()
 
 
+CLIENT_NAME_MAX = 60
+
+
+def clean_client_name(name: str | None) -> str | None:
+    """A client's name as the advisor typed it ("Dana Lee", "Chen household"):
+    spaces tidied, at most CLIENT_NAME_MAX characters; None when blank."""
+    return " ".join((name or "").split())[:CLIENT_NAME_MAX] or None
+
+
 def list_clients(conn: sqlite3.Connection, advisor_id: int) -> list[tuple[int, str]]:
-    """(id, name) per client: the name they chose (Account page), else their login."""
-    return [(r["id"], r["display_name"] or r["username"]) for r in conn.execute(
-        "SELECT u.id, u.username, u.display_name FROM advisor_clients ac JOIN users u "
-        "ON u.id = ac.client_id WHERE ac.advisor_id = ? ORDER BY u.username", (advisor_id,))]
+    """(id, name) per client, by name: what the advisor calls them (Add client,
+    set_client_name), else the name they chose (Account page), else their login."""
+    rows = [(r["id"], r["client_name"] or r["display_name"] or r["username"]) for r in
+            conn.execute("SELECT u.id, u.username, u.display_name, ac.client_name "
+                         "FROM advisor_clients ac JOIN users u ON u.id = ac.client_id "
+                         "WHERE ac.advisor_id = ?", (advisor_id,))]
+    return sorted(rows, key=lambda r: (r[1].casefold(), r[0]))
+
+
+def set_client_name(conn, advisor_id: int, client_id: int, name: str | None) -> bool:
+    """The advisor's name for one of their clients; blank goes back to the
+    client's own name or login. Only the advisor's own clients - False (and
+    nothing changed) otherwise. The client's own Account name isn't touched."""
+    cur = conn.execute("UPDATE advisor_clients SET client_name = ? WHERE advisor_id = ? "
+                       "AND client_id = ?", (clean_client_name(name), advisor_id, client_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def has_signed_in(conn, user_id: int) -> bool:
+    """Whether this account has ever signed in (or chosen its password from
+    a setup link). A client the advisor added who hasn't yet can't read
+    anything "in the app" - they need a setup link first."""
+    row = conn.execute("SELECT last_login_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    return bool(row and row["last_login_at"])
+
+
+def _login_from_name(conn, name: str) -> str:
+    """A login for a client added without an email ("Chen household" ->
+    "chen.household", then "chen.household2"...). Nobody types it unless the
+    advisor sets them a password or sends a setup link."""
+    base = re.sub(r"[^a-z0-9]+", ".", name.casefold()).strip(".")[:40] or "client"
+    login, n = base, 1
+    while conn.execute("SELECT 1 FROM users WHERE lower(username) = ?", (login,)).fetchone():
+        n += 1
+        login = f"{base}{n}"
+    return login
 
 
 def can_view(conn: sqlite3.Connection, viewer_id: int, target_id: int) -> bool:
@@ -855,17 +899,21 @@ def can_view(conn: sqlite3.Connection, viewer_id: int, target_id: int) -> bool:
 
 
 def create_client(conn: sqlite3.Connection, advisor_id: int, username: str,
-                  password: str | None = None) -> int:
+                  password: str | None = None, *, name: str | None = None) -> int:
     """Create an account managed by `advisor_id`. Without a password it gets a
     random one nobody knows, so only the advisor can reach it until they set
     a real one with set_password() or a setup link (create_invite). An email
     address becomes the login and the account's email, so the setup link can
-    be emailed (ROADMAP G6). Raises ValueError for a non-advisor, an invalid
-    username or email, or an email already in use, and the backend's
+    be emailed (ROADMAP G6). `name` is what the advisor calls them ("Dana
+    Lee", "Chen household" - set_client_name); with a name and no username
+    a login is made from the name. Raises ValueError for a non-advisor, an
+    invalid username or email, or an email already in use, and the backend's
     integrity error for a taken username."""
     if not is_advisor(conn, advisor_id):
         raise ValueError("only advisors can create client accounts")
-    email = normalize_email(username) if "@" in (username or "") else None
+    name = clean_client_name(name)
+    username = (username or "").strip()
+    email = normalize_email(username) if "@" in username else None
     if email is not None:
         # an email address is the login, as at sign-up, so the setup link can be emailed
         if not valid_email(email):
@@ -874,10 +922,14 @@ def create_client(conn: sqlite3.Connection, advisor_id: int, username: str,
                         (email, email)).fetchone():
             raise ValueError(f"there's already an account for {email}")
         username = email
+    elif not username and name:
+        username = _login_from_name(conn, name)
     elif not valid_username(username):
         raise ValueError("usernames are 1-50 letters, digits, or . _ @ -")
     client_id = create_user(conn, username, password or secrets.token_urlsafe(32))
     if email is not None:
         conn.execute("UPDATE users SET email = ? WHERE id = ?", (email, client_id))
     link_client(conn, advisor_id, client_id)
+    if name:
+        set_client_name(conn, advisor_id, client_id, name)
     return client_id

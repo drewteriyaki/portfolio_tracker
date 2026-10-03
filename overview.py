@@ -15,6 +15,16 @@ from allocation import allocate
 from update_prices import latest_snapshot
 
 
+def attention_alerts(fired) -> int:
+    """How many holdings make an advisor's client "need a look": a move past
+    the day-move limit (either way), or a loss past the gain/loss limit. A
+    holding UP past that limit - most long-held ones, +20% by default - is
+    good news, not a reason to look, so it isn't counted; each holding counts
+    once however many limits it passes."""
+    return len({(a.symbol, a.account) for a in fired
+                if a.rule_key != "total_gl" or a.direction == "down"})
+
+
 def latest_quotes(conn, tickers=None) -> dict:
     """{ticker: latest successful price_history row} - shared market data.
     Pass `tickers` to read only those (price_history grows every minute, so
@@ -107,6 +117,7 @@ def _summary(user_id, profile, snap=None, positions=(), cash_by_account=None, im
     answered = len(advisor.REQUIRED_PROFILE_FIELDS) - len(advisor.missing_fields(profile))
     out = {"user_id": user_id, "has_data": False, "snapshot_date": None, "imported_at": None,
            "portfolio_value": None, "gain_pct": None, "n_positions": 0, "n_alerts": 0,
+           "n_alerts_attention": 0,
            "alloc_pct": {},
            "profile_answered": answered, "profile_total": len(advisor.REQUIRED_PROFILE_FIELDS)}
     if not snap:
@@ -127,13 +138,15 @@ def _summary(user_id, profile, snap=None, positions=(), cash_by_account=None, im
     portfolio_value = mv + cash
     for ctx in contexts:
         ctx["port_value"] = portfolio_value
+    fired = alerts.evaluate(contexts, rules)
 
     out.update({
         "has_data": True, "snapshot_date": snap, "imported_at": imported_at,
         "portfolio_value": round(portfolio_value, 2),
         "gain_pct": round(gain / cost * 100, 2) if cost else None,
         "n_positions": len(positions),
-        "n_alerts": len(alerts.evaluate(contexts, rules)),
+        "n_alerts": len(fired),
+        "n_alerts_attention": attention_alerts(fired),
         # % of portfolio by asset class, for comparing against a target mix
         "alloc_pct": {r["label"]: r["pct"] or 0.0 for r in allocate(
             [{**p, "live_market_value": M.eff_mv(c)} for p, c in zip(positions, contexts)],

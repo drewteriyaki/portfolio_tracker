@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS advisor_clients (
     advisor_id INTEGER NOT NULL,
     client_id  INTEGER NOT NULL,
+    client_name TEXT,          -- what the advisor calls them ("Chen household"); auth.set_client_name
     PRIMARY KEY (advisor_id, client_id)
 );
 
@@ -186,6 +187,21 @@ CREATE TABLE IF NOT EXISTS security_info (
     avg_volume_10d INTEGER,
     source         TEXT    NOT NULL DEFAULT 'yfinance',
     fetched_at     TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+-- A fund's top holdings from Yahoo (fund_holdings.py, the Fund overlap window):
+-- shared market data like security_info, no user_id. Fetched on demand and
+-- asked again at most once a week. Slot 0 records when the fund was asked
+-- (no holding: Yahoo may list none); slots 1.. are its largest holdings.
+CREATE TABLE IF NOT EXISTS fund_top_holdings (
+    fund        TEXT    NOT NULL,                   -- the fund's ticker, as held
+    slot        INTEGER NOT NULL,                   -- 1 = its largest; 0 = when it was asked
+    symbol      TEXT,                               -- the holding's ticker ('' if none)
+    name        TEXT,
+    weight      DOUBLE PRECISION,                   -- a fraction of the fund (0.064 = 6.4%)
+    source      TEXT    NOT NULL DEFAULT 'yfinance',
+    fetched_at  TEXT    NOT NULL,                   -- ISO 'YYYY-MM-DDTHH:MM:SSZ' UTC
+    PRIMARY KEY (fund, slot)
 );
 
 CREATE TABLE IF NOT EXISTS investor_profiles (

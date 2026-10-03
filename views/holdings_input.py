@@ -385,6 +385,9 @@ def _render_screenshot_reader(existing=()):
                 found = screenshot_read.read(images, key)
             if found.get("answered"):
                 _ai_record("screenshot")  # counted once the AI has read them
+            elif found.get("failure") is not None:
+                found["error"] = (_ai_failed(found["failure"], "screenshot", "Reading screenshots")
+                                  + " You can still paste or type your holdings.")
             del images, shots  # nothing of the images is kept past this point
             ss["me_shots_n"] = n + 1   # empties the uploader and unticks the box
             if found["error"]:
@@ -638,8 +641,12 @@ def _manual_dialog(current_positions, current_cash, current_source=None):
     st.caption(":material/lock: " + TRUST_LINE)
     if ss.get("me_way_next"):   # a screenshot read just filled the rows: show them
         ss["me_way"] = ss.pop("me_way_next")
-    t_type, t_paste, t_shots, t_new = st.tabs([WAY_TYPE, WAY_PASTE, WAY_SHOTS, WAY_NEW],
-                                              key="me_way", on_change="rerun")
+    # "Not sure yet" (the example funds) isn't for an advisor's client: their
+    # advisor recommends what to buy (CLIENT_MODE)
+    ways = [WAY_TYPE, WAY_PASTE, WAY_SHOTS] + ([] if CLIENT_MODE else [WAY_NEW])
+    if ss.get("me_way") not in ways:
+        ss.pop("me_way", None)
+    t_type, t_paste, t_shots, *t_new = st.tabs(ways, key="me_way", on_change="rerun")
     with t_paste:
         st.caption("Good for a long list. On your brokerage's website, select your positions "
                    "table, copy it, and paste it here. The app reads it itself - no AI - and "
@@ -659,11 +666,12 @@ def _manual_dialog(current_positions, current_cash, current_source=None):
             getattr(st, _pm[0])(_pm[1])
     with t_shots:
         _render_screenshot_reader(existing)
-    with t_new:
-        starter_funds.render(_profile(), _starter_horizon(), db=DB, user_id=USER_ID,
-                             key="me_starter")
-        st.caption("When you do buy something, come back here and add it under "
-                   f"**{WAY_TYPE}**.")
+    for tab in t_new:
+        with tab:
+            starter_funds.render(_profile(), _starter_horizon(), db=DB, user_id=USER_ID,
+                                 key="me_starter")
+            st.caption("When you do buy something, come back here and add it under "
+                       f"**{WAY_TYPE}**.")
     with t_type:
         _manual_type_tab(current_positions, current_source, saved_rows, saved_cash, existing)
 
@@ -803,6 +811,24 @@ CSV_FIELDS = ("symbol", "quantity", "cost", "avg_cost", "value", "percent", "acc
               "account_number", "description")
 
 
+def _ai_guess_columns(ai_key, ai_mapping, header, shapes):
+    """"Let AI guess the columns" (csv_import / txn_import .ai_mapping): its
+    guess goes in session state under `ai_key` ({} when it couldn't tell),
+    counted once the AI has answered. None, or what to say if the request
+    failed - then nothing is stored or counted, so the button stays to try
+    again."""
+    import anthropic
+
+    with st.spinner("Working out the columns..."):
+        try:
+            guess = ai_mapping(header, shapes, _anthropic_key())
+        except anthropic.AnthropicError as exc:
+            return _ai_failed(exc, "csv", "Guessing the columns")
+    _ai_record("csv")  # counted once it has answered
+    st.session_state[ai_key] = guess or {}
+    return None
+
+
 def _import_csv_file(src_path, source_name):
     """A positions CSV from any brokerage - one path for every file
     (csv_import.py): find the table, check the columns (matched by name or a
@@ -846,12 +872,12 @@ def _import_csv_file(src_path, source_name):
                           "(text, number, money) - never your holdings or amounts."
                           + (f" {ai_usage.left_text(quota, 'csv').capitalize()}."
                              if quota["limit"] else "")):
-            _ai_record("csv")
-            with st.spinner("Working out the columns..."):
-                ss[ai_key] = csv_import.ai_mapping(
-                    header, csv_import.sample_shapes(rows, header_i), _anthropic_key()) or {}
-            mapping = {**mapping, **ss[ai_key]}
-            if not ss[ai_key]:
+            failed = _ai_guess_columns(ai_key, csv_import.ai_mapping, header,
+                                       csv_import.sample_shapes(rows, header_i))
+            mapping = {**mapping, **ss.get(ai_key, {})}
+            if failed:
+                st.warning(failed + " Choose the columns below.")
+            elif not ss[ai_key]:
                 st.warning("The AI couldn't tell either - choose the columns below.")
 
     names = [f"{c or '(blank)'}  ·  column {i + 1}" for i, c in enumerate(header)]
@@ -995,11 +1021,11 @@ def _import_txn_file(rows, source_name):
                              key=f"{ai_key}_btn",
                              help="Sends only the column names and what kind of thing each "
                                   "cell is (date, text, money) - never your activity."):
-        _ai_record("csv")
-        with st.spinner("Working out the columns..."):
-            ss[ai_key] = txn_import.ai_mapping(
-                header, csv_import.sample_shapes(rows, header_i), _anthropic_key()) or {}
-        mapping = {**mapping, **ss[ai_key]}
+        failed = _ai_guess_columns(ai_key, txn_import.ai_mapping, header,
+                                   csv_import.sample_shapes(rows, header_i))
+        mapping = {**mapping, **ss.get(ai_key, {})}
+        if failed:
+            st.warning(failed + " Choose the columns below.")
 
     names = [f"{c or '(blank)'}  ·  column {i + 1}" for i, c in enumerate(header)]
     ver = "ai" if ss.get(ai_key) else "auto"

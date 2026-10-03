@@ -752,8 +752,9 @@ def _step_first(profile, plan, mix, kind, horizon, monthly):
                     f"{mix['weights']['bonds']}% bonds, from your answers.")
     st.markdown("#### What your first buy looks like")
     _first_buy_steps()
-    with st.expander("Not sure what to start with?", icon=":material/help:"):
-        starter_funds.render(profile, horizon, db=DB, user_id=USER_ID, key="gs_starter")
+    if not CLIENT_MODE:   # never beside an advisor's recommendations
+        with st.expander("Not sure what to start with?", icon=":material/help:"):
+            starter_funds.render(profile, horizon, db=DB, user_id=USER_ID, key="gs_starter")
     st.markdown("**Your checklist**")
     _account_checklist("first", monthly)
     _coach_button("first")
@@ -829,16 +830,69 @@ def _route_state(has_holdings):
         "first": real or "first_buy" in ticks,
         "bring": real,
     }
-    managed = IS_MANAGED_CLIENT or ON_CLIENT
-    learn_required = route.learn_first(profile.get("experience"), real)
+    managed = CLIENT_MODE
+    learn_required = route.learn_first(profile.get("experience"), real, managed)
     keys = route.route_keys(learn_required, managed)
     titles = dict(GET_STARTED_STEPS)
     return {"profile": profile, "missing": missing, "items": items, "plan": plan,
             "horizon": horizon, "done": done, "pressed": manual,
             "learn_required": learn_required, "managed": managed, "real": real,
             "route": list(keys),
-            "shown": list(route.stage_keys(route.LEARN) + route.stage_keys(route.INVEST, managed)),
+            "shown": list(route.stage_keys(route.LEARN, managed)
+                          + route.stage_keys(route.INVEST, managed)),
             "waypoints": [(k, titles[k], done[k]) for k in keys]}
+
+
+# ---- client mode: Home's next step in their advisor's voice --------------- #
+
+def _advisor_waiting():
+    """What their advisor left for this account (advising.waiting_for_client),
+    read once per run."""
+    if "advisor_waiting" not in _RUN:
+        c = connect(DB)
+        try:
+            _RUN["advisor_waiting"] = advising.waiting_for_client(c, USER_ID)
+        finally:
+            c.close()
+    return _RUN["advisor_waiting"]
+
+
+def _client_step(state, has_holdings):
+    """An advisor's client's next step (route.advisor_step), or None - also
+    for anyone else (CLIENT_MODE), so the usual route decides."""
+    if not CLIENT_MODE:
+        return None
+    w = _advisor_waiting()
+    return route.advisor_step(proposals_waiting=w["proposals"], reports_new=w["reports"],
+                              profile_missing=bool(state["missing"]),
+                              has_holdings=has_holdings)
+
+
+def _client_step_words(step):
+    """(title, line, button label, action) for route.advisor_step()."""
+    notes = _label("Advisor notes")
+    k = step["key"]
+    if k == "proposal":
+        return ("Your advisor has a proposal waiting for you",
+                "A suggested mix, with a note on why. Read it and let them know what you think "
+                "- nothing is bought or sold until you decide together.",
+                "Read the proposal", ("page", "Advisor notes"))
+    if k == "report":
+        return ("A new progress report from your advisor",
+                "How your investments have been doing, with a note from them.",
+                "Read the report", ("page", "Advisor notes"))
+    if k == "profile_advisor":
+        return ("Answer a few questions for your advisor",
+                "Your timeline and how you feel about ups and downs - a few taps, so they can "
+                "prepare for your conversations.", "Answer the questions", ("learn", "profile"))
+    if CAN_IMPORT:   # bring_advisor
+        return ("Bring your statements in with your advisor",
+                "Your advisor can bring them in for you, or you can add them yourself - paste "
+                "them from any brokerage, type them in or upload a CSV.", "Add holdings",
+                ("dialog", "manual"))
+    return ("Bring your statements in with your advisor",
+            "Your advisor brings them in - your portfolio shows up here once they have. How "
+            f"to reach them is under {notes}.", f"Open {notes}", ("page", "Advisor notes"))
 
 
 def _on_the_route():
@@ -1000,6 +1054,10 @@ def _render_get_started(has_holdings, value):
         st.success("Every step of your route is complete. Home keeps track of your goal from "
                    "here, and these pages are here whenever you'd like a refresher.",
                    icon=":material/flag:")
+    elif managed and stage == route.LEARN:
+        st.caption(":material/info: Learn is here whenever you'd like it - short reads on the "
+                   "basics. Your plan is made with your advisor: see Plan and "
+                   f"{_label('Advisor notes')}.")
     elif optional[stage]:
         st.caption(":material/info: Learn is optional for you - the basics are here whenever "
                    "you'd like them. Your route starts at Start investing.")
@@ -1065,7 +1123,8 @@ def _render_get_started(has_holdings, value):
             _waypoint_footer(at, keys, titles, done, at in pressed, **footer)
 
     # ---- your direction, in one line (the whole card in a window) --------- #
-    if kind and not missing:
+    # (not for an advisor's client: its example mix could cross their advisor's)
+    if kind and not missing and not managed:
         with st.container(border=True, horizontal=True, vertical_alignment="center"):
             st.html(f"<span class='pt-route-label'>Your direction</span><br>"
                     f"<b>{html.escape(kind['name'])}</b> - {html.escape(kind['line'])}",

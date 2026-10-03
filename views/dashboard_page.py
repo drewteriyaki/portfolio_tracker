@@ -17,6 +17,7 @@ ROUTE_ASK = {   # what "Ask Northwend" starts with, per next step
     "steady": "I'm on track for my goal. What should I keep an eye on from here?",
     "reached": "I've reached my goal. What do people usually think about when they hit a goal "
                "and set the next one?",
+    **CLIENT_ASK,   # an advisor's client's next steps (views/start_home.py)
 }
 
 
@@ -102,19 +103,24 @@ def _render_route():
     except ValueError:
         days = None
     waypoints = state["waypoints"]   # their route (Learn only while it's theirs)
-    step = route.next_step(
+    # an advisor's client: what their advisor left them first (client mode)
+    client_step = _client_step(state, bool(positions))
+    step = client_step or route.next_step(
         has_goal=has_goal, can_manage=CAN_MANAGE, profile_missing=bool(state["missing"]),
         has_holdings=bool(positions), monthly=monthly, goal=gp,
         drift=route.drifted(pct, load_alloc_targets(), load_drift_threshold()),
         days_since_holdings=days, waypoints=waypoints)
     reached = bool(gp and gp["status"] == "reached")
-    title, text, button, action = _route_words(step, gp, monthly, plan)
+    title, text, button, action = (_client_step_words(step) if client_step else
+                                   _route_words(step, gp, monthly, plan))
 
     with st.container(border=True, key="pt_route_reached" if reached else "pt_route"):
-        kind = learn.investor_type(state["profile"],
-                                   learn.starter_mix(state["profile"], state["horizon"]),
-                                   state["items"])
-        head = ("<div class='pt-route-label'>Your route"
+        # the investor type comes with an example mix - not beside an advisor's
+        kind = None if CLIENT_MODE else learn.investor_type(
+            state["profile"], learn.starter_mix(state["profile"], state["horizon"]),
+            state["items"])
+        head = ("<div class='pt-route-label'>"
+                + ("Your next step, with your advisor" if CLIENT_MODE else "Your route")
                 + (f" · {html.escape(kind['name'])}" if kind else "") + "</div>")
         if has_goal:
             label, tone = PLAN_STATUS[gp["status"]]
@@ -127,11 +133,13 @@ def _render_route():
                      f"<div class='pt-goal-fill' style='width:{share:.1f}%'></div></div>"
                      f"<div class='pt-goal-sub'>{fmt_money0(gp['current'])} of "
                      f"{fmt_money0(gp['target'])} by {_fmt_month(plan['target_date'])}</div>")
-        n_done = sum(1 for _, _, d in waypoints if d)
-        # the route as a trail through the expedition's regions (route.py)
-        head += route.trail_html(route.dots(waypoints, reached),
-                                 f"{n_done} of {len(waypoints)} waypoints reached, then your goal")
-        head += _where_html(state)   # "You're in Start investing · step 2 of 4 · ..."
+        if not CLIENT_MODE:   # an advisor's client walks with their advisor, not a trail
+            n_done = sum(1 for _, _, d in waypoints if d)
+            # the route as a trail through the expedition's regions (route.py)
+            head += route.trail_html(route.dots(waypoints, reached),
+                                     f"{n_done} of {len(waypoints)} waypoints reached, then "
+                                     "your goal")
+            head += _where_html(state)   # "You're in Start investing · step 2 of 4 · ..."
         st.html(head)
         with st.container(horizontal=True, vertical_alignment="center"):
             # "$" escaped: a pair of them would be read as a math formula
@@ -149,6 +157,7 @@ if PAGE == "Dashboard":
         _render_route()
         render_kit_card(portfolio_value)      # milestones and gear (views/kit.py)
         render_fee_card()                     # fee check (views/fees.py)
+        render_overlap_card()                 # fund overlap (views/fund_overlap.py)
         check_milestones(portfolio_value)
 
     # ---- hero: value, today's move, since last visit, headline stats ----- #
@@ -196,14 +205,28 @@ if PAGE == "Dashboard":
         + (f"<div class='pt-hero-delta'>{_day_html}</div>" if _day_html else "")
         + (f"<div class='pt-hero-sub'>{_since_html}</div>" if _since_html else "")
         + "</div><div class='pt-stats' role='list' aria-label='Portfolio summary'>"
-        + _stat("Total gain/loss", _tone(tot_gl, _signed_money(tot_gl)),
+        # with dividends known: the price change, then the total return beside it
+        + _stat("Price change" if tot_return else "Total gain/loss",
+                _tone(tot_gl, _signed_money(tot_gl)),
                 _tone(tot_glp, fmt_pct(tot_glp)) if tot_glp is not None else "")
+        + (_stat("Total return, with dividends",
+                 _tone(tot_return["usd"], _signed_money(tot_return["usd"])),
+                 _tone(tot_return["usd"], fmt_pct(tot_return["pct"]))
+                 if tot_return["pct"] is not None else "") if tot_return else "")
         + _stat("Holdings", fmt_money(tot_mv), f"{len(positions)} positions")
         + _stat("Cash", fmt_money(cash),
                 "" if hide_amounts or not portfolio_value
                 else f"{cash / portfolio_value * 100:.1f}% of total")
         + "</div>"
     ))
+    if tot_return:
+        # "$" escaped: two amounts would be read as a math formula
+        st.caption((f"Total return adds the {fmt_money(tot_return['dividends'])} in dividends "
+                    "your holdings paid to their price change. "
+                    + income.source_words(DIVIDENDS[p["symbol"]]["source"]
+                                          for p, c in zip(positions, contexts)
+                                          if c["dividends"] and p["cost_basis"] is not None))
+                   .replace("$", r"\$"))
 
     # ---- goal: one line from the plan, or a nudge to set one ----------- #
     # (the advisor's own portfolio; the investor home has it in Your route)
@@ -581,6 +604,10 @@ if PAGE == "Dashboard":
 
     chosen = [M.BY_KEY[k] for k in st.session_state["col_keys"] if k in M.BY_KEY] \
         or [M.BY_KEY[k] for k in M.DEFAULT_KEYS]
+    # the total-return columns only when some holding has dividends to add:
+    # otherwise the price change alone, without empty columns beside it
+    chosen = [m for m in chosen if m.key not in M.SHOWN_WHEN_KNOWN
+              or any(M.value(m.key, ctx) is not None for ctx in contexts)]
 
     records = [{m.label: M.value(m.key, ctx) for m in chosen} for ctx in contexts]
 
@@ -609,6 +636,9 @@ if PAGE == "Dashboard":
             if hide_amounts else None),
     )
     st.caption("Green = gain, red = loss. Price / Market Value / Gain-Loss use the live price where "
-               "available, otherwise the CSV's figures. Edit the column set with **Columns**.")
+               "available, otherwise the CSV's figures. Edit the column set with **Columns**."
+               + (" Unrealized G/L is the price change; **Total return** adds the dividends "
+                  "each holding paid (blank where none are known)."
+                  if any(m.key in M.SHOWN_WHEN_KNOWN for m in chosen) else ""))
 
     st.divider()

@@ -91,7 +91,8 @@ def status(conn, user_id: int, kind: str, now: datetime | None = None, *,
 
 
 def record(conn, user_id: int, kind: str, now: datetime | None = None) -> None:
-    """Count one use - called just before the AI request is sent."""
+    """Count one use - called once the AI request has succeeded (a failed one
+    doesn't use up the allowance)."""
     conn.execute("INSERT INTO ai_usage (user_id, month, kind, used) VALUES (?, ?, ?, 1) "
                  "ON CONFLICT (user_id, month, kind) DO UPDATE SET used = ai_usage.used + 1",
                  (user_id, month_of(now), kind))
@@ -119,3 +120,44 @@ def used_up_text(st: dict, kind: str) -> str:
     one, many = NOUNS[kind]
     return (f"You've used this month's {st['limit']} {many if st['limit'] != 1 else one}. "
             f"They start again on {st['resets']:%B} {st['resets'].day}.")
+
+
+# ---- when an AI request fails ---------------------------------------------- #
+# One calm sentence per kind of failure, never the error's own text (it can
+# hold status codes, request ids or the key's state). The details go to the
+# server log; a request is only counted (record) once it has succeeded.
+BUSY, UNAVAILABLE = "busy", "unavailable"
+# HTTP statuses that mean "try again shortly": rate limited, overloaded, down
+_BUSY_STATUSES = {408, 429, 500, 502, 503, 504, 529}
+
+
+def failure_kind(exc: BaseException) -> str:
+    """BUSY (rate limited, overloaded, timed out, couldn't connect - worth
+    another try in a minute) or UNAVAILABLE (the key, the account or the
+    request itself - needs someone to fix it)."""
+    try:
+        import anthropic
+    except ImportError:   # pragma: no cover - the SDK is a requirement
+        return UNAVAILABLE
+    busy = tuple(getattr(anthropic, n) for n in (
+        "RateLimitError", "OverloadedError", "ServiceUnavailableError", "InternalServerError",
+        "APIConnectionError", "DeadlineExceededError", "RetryableError")
+        if hasattr(anthropic, n))
+    if isinstance(exc, busy) or getattr(exc, "status_code", None) in _BUSY_STATUSES:
+        return BUSY
+    return UNAVAILABLE
+
+
+def failure_text(exc: BaseException, app_name: str = "Northwend", feature: str = "") -> str:
+    """What to show when an AI request failed - one friendly sentence per
+    kind. `feature` names what isn't available (default "Ask <app>")."""
+    if failure_kind(exc) == BUSY:
+        return f"{app_name} is busy right now - try again in a minute."
+    return f"{feature or 'Ask ' + app_name} isn't available right now."
+
+
+def log_failure(exc: BaseException, kind: str) -> None:
+    """The details, for the server log only."""
+    import sys
+    print(f"[ai] {kind} request failed ({failure_kind(exc)}): {type(exc).__name__}: "
+          f"{str(exc)[:300]}", file=sys.stderr)
